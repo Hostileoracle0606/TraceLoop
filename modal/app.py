@@ -42,8 +42,8 @@ image = (
         "dfu-util",
         "libusb-1.0-0",
     )
-    # Install west (Zephyr's meta-tool) and jsonschema (required by west)
-    .run_commands("pip install west jsonschema")
+    # Install west (Zephyr's meta-tool), jsonschema (required by west), and fastapi (required by @modal.fastapi_endpoint)
+    .run_commands("pip install west jsonschema fastapi")
     # Clone Zephyr and install the toolchain
     # This is the expensive part — ~5-10 minutes on first build
     .run_commands(
