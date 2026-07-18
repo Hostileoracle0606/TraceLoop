@@ -69,15 +69,15 @@ image = (
     # Install Renode (portable Linux binary)
     .run_commands(
         "cd /tmp && "
-        "wget -q https://github.com/renode/renode/releases/download/v1.15.3/renode-1.15.3.x86_64.tar.gz && "
-        "tar xf renode-1.15.3.x86_64.tar.gz -C /opt && "
-        "ln -s /opt/renode-1.15.3/renode /usr/local/bin/renode"
+        "wget https://github.com/renode/renode/releases/download/v1.16.1/renode-1.16.1.linux-portable.tar.gz && "
+        "tar xf renode-1.16.1.linux-portable.tar.gz -C /opt && "
+        "ln -s /opt/renode-1.16.1/renode /usr/local/bin/renode"
     )
     .env(
         {
             "ZEPHYR_BASE": "/opt/zephyrproject/zephyr",
             "ZEPHYR_SDK_INSTALL_DIR": "/opt/zephyr-sdk-0.17.0",
-            "PATH": "/opt/zephyr-sdk-0.17.0/arm-zephyr-eabi/bin:/opt/renode-1.15.3:${PATH}",
+            "PATH": "/opt/zephyr-sdk-0.17.0/arm-zephyr-eabi/bin:/opt/renode-1.16.1:${PATH}",
         }
     )
 )
@@ -211,7 +211,7 @@ def firmware_job(request: dict) -> dict:
         renode_result, renode_timed_out = _run_command(
             renode_cmd,
             timeout=60,  # 1-minute sim timeout
-            cwd="/opt/renode-1.15.3",
+            cwd="/opt/renode-1.16.1",
         )
 
         if renode_timed_out:
