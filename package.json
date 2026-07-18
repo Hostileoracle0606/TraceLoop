@@ -5,8 +5,9 @@
   "type": "module",
   "description": "Causal firmware debugger — explains why a firmware test failed, not just that it did.",
   "scripts": {
-    "test": "vitest run src/",
+    "test": "vitest run src/ && vitest run backend/",
     "test:watch": "vitest src/",
+    "test:backend": "vitest run backend/",
     "typecheck": "tsc --noEmit",
     "backend:dev": "tsx watch backend/trpc/server.ts",
     "backend:start": "tsx backend/trpc/server.ts",
@@ -23,8 +24,11 @@
     "vitest": "^2.1.8"
   },
   "dependencies": {
+    "@ai-sdk/anthropic": "^4.0.16",
+    "@ai-sdk/openai": "^4.0.16",
     "@supabase/supabase-js": "^2.110.7",
     "@trpc/server": "^11.18.0",
+    "ai": "^7.0.31",
     "drizzle-orm": "^0.38.4",
     "inngest": "^4.13.0",
     "postgres": "^3.4.9",

@@ -17,6 +17,11 @@ const envSchema = z.object({
   INNGEST_EVENT_KEY: z.string().min(1).optional(),
   INNGEST_BASE_URL: z.string().url().optional(),
 
+  // LLM (Vercel AI SDK)
+  LLM_PROVIDER: z.enum(['anthropic', 'openai']).default('anthropic'),
+  ANTHROPIC_API_KEY: z.string().min(1).optional(),
+  OPENAI_API_KEY: z.string().min(1).optional(),
+
   // Server
   PORT: z.coerce.number().default(3000),
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
@@ -62,6 +67,19 @@ export function getInngestConfig(): { eventKey?: string; baseUrl?: string } {
   return {
     eventKey: e.INNGEST_EVENT_KEY,
     baseUrl: e.INNGEST_BASE_URL,
+  };
+}
+
+export function getLLMConfig(): {
+  provider: 'anthropic' | 'openai';
+  anthropicApiKey?: string;
+  openaiApiKey?: string;
+} {
+  const e = getEnv();
+  return {
+    provider: e.LLM_PROVIDER,
+    anthropicApiKey: e.ANTHROPIC_API_KEY,
+    openaiApiKey: e.OPENAI_API_KEY,
   };
 }
 
