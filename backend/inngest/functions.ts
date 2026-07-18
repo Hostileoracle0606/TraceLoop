@@ -6,6 +6,9 @@ import { db } from '../db';
 import { runs, tasks, activityLogs, patches } from '../db/schema';
 import { eq } from 'drizzle-orm';
 import { proposePatchLLM } from '../llm/functions';
+import { parseRenodeLog } from '@engine/renode-parser';
+import { analyze } from '@engine/analyze';
+import type { TraceEvent, Assertion } from '@engine/types';
 
 // Timeout constants (in milliseconds)
 const BUILD_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
@@ -80,6 +83,12 @@ export const firmwareRunPipeline = inngest.createFunction(
     id: 'firmware-run-pipeline',
     retries: MAX_RETRIES,
     triggers: [{ event: Events.TASK_RUN_REQUESTED }],
+    cancelOn: [
+      {
+        event: Events.TASK_CANCELLED,
+        if: 'async.data.taskId == event.data.taskId',
+      },
+    ],
   },
   async ({ event, step }) => {
     const data = event.data as TaskRunEventData;
@@ -150,22 +159,16 @@ export const firmwareRunPipeline = inngest.createFunction(
     }
 
     // ── Step 2: Analyze locally ────────────────────────────────────
-    let analyzeResult: { status: 'passed' | 'failed'; rootCauseText?: string; rootCause?: unknown };
+    let analyzeResult: { status: 'passed' | 'failed'; rootCauseText?: string; rootCause?: TraceEvent };
     try {
       analyzeResult = await step.run('analyze-results', async () => {
         await updateRunStatus(data.runId, 'analyzing');
         await updateTaskStatus(data.taskId, 'analyzing');
 
-        // Run local analysis against the first acceptance criterion
-        const { analyze } = await import('../../../src/engine/analyze');
-        const assertion = data.acceptanceCriteria[0];
-        if (!assertion) {
-          return { status: 'passed' as const, rootCauseText: 'No acceptance criteria defined', rootCause: undefined };
-        }
-
-        // Parse trace log into events for the analysis engine
-        const traceEvents = JSON.parse(jobResult.trace?.log ?? '[]');
-        return analyze(traceEvents, assertion);
+        return analyzeTraceStep(
+          jobResult.trace?.log ?? '',
+          data.acceptanceCriteria,
+        );
       });
     } catch (error) {
       const failureType = classifyFailure(error, 'analyze-results');
@@ -200,7 +203,7 @@ export const firmwareRunPipeline = inngest.createFunction(
         const assertion = data.acceptanceCriteria[0];
 
         if (rootCause && assertion) {
-          const patchProposal = await proposePatchLLM(rootCause, data.files, assertion);
+          const patchProposal = await proposePatchLLM(rootCause as unknown as Parameters<typeof proposePatchLLM>[0], data.files, assertion);
 
           // Persist patch
           const [patch] = await db.insert(patches).values({
@@ -317,6 +320,29 @@ async function updateRunStatus(
   status: 'building' | 'simulating' | 'analyzing' | 'passed' | 'failed' | 'error' | 'cancelled'
 ) {
   const supabase = createSupabaseAdminClient();
+  
+  // C2: Guard — don't update if task has been stopped
+  const { data: run, error: fetchError } = await supabase
+    .from('runs')
+    .select('task_id')
+    .eq('id', runId)
+    .single();
+  
+  if (fetchError || !run) {
+    throw new Error(`Failed to fetch run: ${fetchError?.message}`);
+  }
+  
+  const { data: task } = await supabase
+    .from('tasks')
+    .select('status')
+    .eq('id', run.task_id)
+    .single();
+  
+  if (task?.status === 'stopped') {
+    // Task was cancelled — skip status update
+    return;
+  }
+  
   const updateData: Record<string, unknown> = { status };
 
   if (status === 'building') updateData.build_started_at = new Date().toISOString();
@@ -339,6 +365,19 @@ async function updateTaskStatus(
   status: string
 ) {
   const supabase = createSupabaseAdminClient();
+  
+  // C2: Guard — don't overwrite 'stopped' status (task was cancelled)
+  const { data: currentTask } = await supabase
+    .from('tasks')
+    .select('status')
+    .eq('id', taskId)
+    .single();
+  
+  if (currentTask?.status === 'stopped' && status !== 'stopped') {
+    // Task was cancelled — don't overwrite
+    return;
+  }
+  
   const updateData: Record<string, unknown> = {
     status,
     updated_at: new Date().toISOString(),
@@ -378,6 +417,42 @@ async function logActivity(
     });
 
   if (error) throw new Error(`Failed to log activity: ${error.message}`);
+}
+
+// ── Pure analysis step (testable, no side effects) ─────────────────────
+
+/**
+ * Parse a raw Renode trace log and evaluate all acceptance criteria.
+ * Extracted for testability — the pipeline step calls this directly.
+ */
+export function analyzeTraceStep(
+  rawTraceLog: string,
+  acceptanceCriteria: Array<{ name: string; register: string; expect: string; byTime: number }>,
+): { status: 'passed' | 'failed'; rootCauseText?: string; rootCause?: TraceEvent; chain?: unknown } {
+  // Empty criteria ≠ passed — there's nothing to prove
+  if (acceptanceCriteria.length === 0) {
+    return { status: 'failed', rootCauseText: 'No acceptance criteria to prove' };
+  }
+
+  // Parse the raw Renode text log into normalized trace events
+  const traceEvents = parseRenodeLog(rawTraceLog);
+
+  // Evaluate ALL criteria — fail if ANY fails
+  const results = acceptanceCriteria.map((c) => analyze(traceEvents, c as Assertion));
+  const allPassed = results.every((r) => r.status === 'passed');
+
+  if (allPassed) {
+    return { status: 'passed', rootCauseText: results[0]?.rootCauseText };
+  }
+
+  // Return the first failure's root cause
+  const firstFail = results.find((r) => r.status === 'failed');
+  return {
+    status: 'failed',
+    rootCause: firstFail?.rootCause,
+    rootCauseText: firstFail?.rootCauseText,
+    chain: firstFail?.chain,
+  };
 }
 
 // Export all functions for Inngest to serve

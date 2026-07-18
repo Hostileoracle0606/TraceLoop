@@ -54,7 +54,7 @@ export function validateAssertionForBoard(
 
   // Extract GPIO port from register (e.g. "GPIOA" from "GPIOA_BSRR")
   const gpioMatch = register.match(/^(GPIO[A-I])/);
-  if (gpioMatch) {
+  if (gpioMatch && gpioMatch[1]) {
     const port = gpioMatch[1];
     if (!board.gpioPorts.includes(port)) {
       return {
@@ -76,7 +76,7 @@ export function validateAssertionForBoard(
 
   // Check timer references (e.g. "TIM2", "TIM5")
   const timerMatch = register.match(/^TIM(\d+)$/);
-  if (timerMatch) {
+  if (timerMatch && timerMatch[1]) {
     const timerNum = parseInt(timerMatch[1], 10);
     if (timerNum > board.timerCount) {
       return {

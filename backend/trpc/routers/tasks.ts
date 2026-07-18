@@ -12,7 +12,7 @@ const acceptanceCriteriaSchema = z.array(z.object({
   register: z.string(),
   expect: z.string(),
   byTime: z.number(),
-}));
+})).min(1, 'At least one acceptance criterion is required');
 
 const taskStatusSchema = z.enum([
   'clarification-needed',
@@ -291,7 +291,37 @@ export const tasksRouter = router({
         throw new Error('Access denied');
       }
 
-      // Task must have files and be in a state that allows execution
+      // C1: FSM state guard — only allow execution from valid states
+      const validExecuteStates = ['editing', 'patching', 'rerunning', 'blocked'];
+      if (!validExecuteStates.includes(task.status)) {
+        throw new Error(`Cannot execute from state '${task.status}'. Must be one of: ${validExecuteStates.join(', ')}`);
+      }
+
+      // C1: Concurrent run guard — prevent multiple runs for same task+iteration
+      const activeRun = await ctx.db.query.runs.findFirst({
+        where: and(
+          eq(runs.taskId, task.id),
+          eq(runs.iteration, task.iteration),
+        ),
+      });
+      if (activeRun && !['passed', 'failed', 'error', 'cancelled'].includes(activeRun.status)) {
+        throw new Error(`Run already in progress for iteration ${task.iteration}`);
+      }
+
+      // C1: Budget checks
+      if (task.iteration >= task.maxIterations) {
+        throw new Error(`Maximum iterations (${task.maxIterations}) exceeded`);
+      }
+      // Note: Time and cost budget checks would require aggregating historical runs
+      // For now, we check if the task has a startedAt and if elapsed time exceeds maxTimeMs
+      if (task.startedAt) {
+        const elapsedMs = Date.now() - new Date(task.startedAt).getTime();
+        if (elapsedMs > task.maxTimeMs) {
+          throw new Error(`Maximum time budget (${task.maxTimeMs}ms) exceeded`);
+        }
+      }
+
+      // Task must have files
       if (!task.currentFiles || Object.keys(task.currentFiles).length === 0) {
         throw new Error('Task has no source files to build');
       }
@@ -317,11 +347,25 @@ export const tasksRouter = router({
 
       if (!run) throw new Error('Failed to create run');
 
-      // Transition task to building state
-      await ctx.db
+      // C1: Atomic compare-and-set for status transition
+      // Only transition if task is still in a valid state (prevents race conditions)
+      const [updatedTask] = await ctx.db
         .update(tasks)
         .set({ status: 'building', updatedAt: new Date() })
-        .where(eq(tasks.id, task.id));
+        .where(
+          and(
+            eq(tasks.id, task.id),
+            // Ensure status hasn't changed since we checked
+            eq(tasks.status, task.status)
+          )
+        )
+        .returning();
+
+      if (!updatedTask) {
+        // Status changed concurrently — rollback the run
+        await ctx.db.delete(runs).where(eq(runs.id, run.id));
+        throw new Error('Task state changed concurrently. Please retry.');
+      }
 
       // Log activity
       await ctx.db.insert(activityLogs).values({

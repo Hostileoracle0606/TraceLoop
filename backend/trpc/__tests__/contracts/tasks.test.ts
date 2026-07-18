@@ -92,10 +92,10 @@ describe('tasks router contracts', () => {
 
     it('create validates intent is required', async () => {
       const { caller } = createCaller(testUser, mockDb);
+      // @ts-expect-error - testing missing required field
       await expect(caller.create({
         projectId: VALID_UUID,
         acceptanceCriteria: validAcceptanceCriteria,
-        // @ts-expect-error - testing missing required field
       })).rejects.toThrow();
     });
 

@@ -11,7 +11,7 @@ export function createTrpcClient() {
   return trpc.createClient({
     links: [
       httpBatchLink({
-        url: '/trpc',
+        url: import.meta.env.VITE_TRPC_URL || '/trpc',
         async headers() {
           const { data: { session } } = await supabase.auth.getSession();
           const token = session?.access_token;

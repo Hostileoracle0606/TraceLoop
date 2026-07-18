@@ -7,9 +7,9 @@ import {
   type BoardCapabilities,
 } from './board-capabilities';
 
-const stm32 = BOARD_REGISTRY.stm32f4_disco;
-const nrf = BOARD_REGISTRY.nrf52840dk_nrf52840;
-const esp32 = BOARD_REGISTRY.esp32c3_devkitm;
+const stm32 = BOARD_REGISTRY.stm32f4_disco!;
+const nrf = BOARD_REGISTRY.nrf52840dk_nrf52840!;
+const esp32 = BOARD_REGISTRY.esp32c3_devkitm!;
 
 describe('validateAssertionForBoard', () => {
   describe('GPIO port validation', () => {
@@ -178,20 +178,20 @@ describe('BOARD_REGISTRY', () => {
 
   it('has stm32f4_disco entry', () => {
     expect(BOARD_REGISTRY.stm32f4_disco).toBeDefined();
-    expect(BOARD_REGISTRY.stm32f4_disco.timerCount).toBe(14);
-    expect(BOARD_REGISTRY.stm32f4_disco.gpioPorts).toHaveLength(9);
+    expect(BOARD_REGISTRY.stm32f4_disco!.timerCount).toBe(14);
+    expect(BOARD_REGISTRY.stm32f4_disco!.gpioPorts).toHaveLength(9);
   });
 
   it('has nrf52840dk_nrf52840 entry', () => {
     expect(BOARD_REGISTRY.nrf52840dk_nrf52840).toBeDefined();
-    expect(BOARD_REGISTRY.nrf52840dk_nrf52840.hasBLE).toBe(true);
-    expect(BOARD_REGISTRY.nrf52840dk_nrf52840.ledMappings).toHaveLength(4);
+    expect(BOARD_REGISTRY.nrf52840dk_nrf52840!.hasBLE).toBe(true);
+    expect(BOARD_REGISTRY.nrf52840dk_nrf52840!.ledMappings).toHaveLength(4);
   });
 
   it('has esp32c3_devkitm entry', () => {
     expect(BOARD_REGISTRY.esp32c3_devkitm).toBeDefined();
-    expect(BOARD_REGISTRY.esp32c3_devkitm.hasWiFi).toBe(true);
-    expect(BOARD_REGISTRY.esp32c3_devkitm.architecture).toBe('RISC-V RV32IMC');
+    expect(BOARD_REGISTRY.esp32c3_devkitm!.hasWiFi).toBe(true);
+    expect(BOARD_REGISTRY.esp32c3_devkitm!.architecture).toBe('RISC-V RV32IMC');
   });
 
   it('all boards have status active', () => {

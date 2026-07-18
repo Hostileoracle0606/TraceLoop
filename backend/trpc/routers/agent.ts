@@ -1,9 +1,10 @@
 import { z } from 'zod';
 import { eq } from 'drizzle-orm';
 import { router, authenticatedProcedure } from '../context';
-import { tasks, projects, boards } from '../../db/schema';
+import { tasks, projects, boards, activityLogs } from '../../db/schema';
 import { clarifyIntent, generatePlan, editSource, proposePatchLLM } from '../../llm/functions';
 import { sanitizePath, validatePlanLimits } from '../middleware/validate';
+import { applyFileOperations, type FileOperation } from '../../llm/apply-file-operations';
 
 /**
  * Agent tRPC router.
@@ -89,6 +90,22 @@ export const agentRouter = router({
         task.acceptanceCriteria
       );
 
+      // Persist plan advancement: transition planning → editing
+      await ctx.db
+        .update(tasks)
+        .set({ status: 'editing', updatedAt: new Date() })
+        .where(eq(tasks.id, input.taskId));
+
+      await ctx.db.insert(activityLogs).values({
+        taskId: input.taskId,
+        fromState: 'planning',
+        toState: 'editing',
+        reason: 'plan-generated',
+        actor: 'agent',
+        iteration: task.iteration,
+        metadata: { planSummary: plan.summary, stepCount: plan.steps.length },
+      });
+
       return plan;
     }),
 
@@ -137,11 +154,26 @@ export const agentRouter = router({
 
       const result = await editSource(input.plan, task.currentFiles ?? {});
 
-      // Update task files with the operations
-      // In a full implementation, this would apply the file operations to the workspace
-      // and update task.currentFiles. For now, return the operations for the client to handle.
+      // Apply validated file operations to task.currentFiles (ADR-0007)
+      const currentFiles = task.currentFiles ?? {};
+      const updatedFiles = applyFileOperations(currentFiles, result.operations as FileOperation[]);
 
-      return result;
+      await ctx.db
+        .update(tasks)
+        .set({ currentFiles: updatedFiles, updatedAt: new Date() })
+        .where(eq(tasks.id, input.taskId));
+
+      await ctx.db.insert(activityLogs).values({
+        taskId: input.taskId,
+        fromState: 'editing',
+        toState: 'editing',
+        reason: 'files-applied',
+        actor: 'agent',
+        iteration: task.iteration,
+        metadata: { operationCount: result.operations.length, summary: result.summary },
+      });
+
+      return { ...result, appliedFiles: Object.keys(updatedFiles) };
     }),
 
   /**

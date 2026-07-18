@@ -61,6 +61,18 @@ export const rateLimitedProcedure = authenticatedProcedure.use(
   rateLimitMiddleware({ limiter: authLimiter })
 );
 
+// Admin procedure (requires admin role in user_metadata)
+export const adminProcedure = authenticatedProcedure.use(async ({ ctx, next }) => {
+  const role = ctx.user.user_metadata?.role;
+  if (role !== 'admin') {
+    throw new TRPCError({
+      code: 'FORBIDDEN',
+      message: 'Admin access required',
+    });
+  }
+  return next();
+});
+
 // Ownership check middleware factory
 export function requireOwnership<T extends { userId: string }>(
   getResource: (id: string, db: Context['db']) => Promise<T | null>,

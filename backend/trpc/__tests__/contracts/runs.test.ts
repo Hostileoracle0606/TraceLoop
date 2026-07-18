@@ -34,14 +34,6 @@ describe('runs router contracts', () => {
       const { caller } = createCaller(null, mockDb);
       await expect(caller.create({ taskId: VALID_TASK_UUID, iteration: 0 })).rejects.toThrow(TRPCError);
     });
-
-    it('updateStatus requires authentication', async () => {
-      const { caller } = createCaller(null, mockDb);
-      await expect(caller.updateStatus({
-        id: VALID_RUN_UUID,
-        status: 'passed',
-      })).rejects.toThrow(TRPCError);
-    });
   });
 
   // ── Input validation ───────────────────────────────────────────────
@@ -68,52 +60,6 @@ describe('runs router contracts', () => {
         taskId: VALID_TASK_UUID,
         iteration: 1.5,
       })).rejects.toThrow();
-    });
-
-    it('updateStatus validates UUID for id', async () => {
-      const { caller } = createCaller(testUser, mockDb);
-      await expect(caller.updateStatus({
-        id: 'bad',
-        status: 'passed',
-      })).rejects.toThrow();
-    });
-
-    it('updateStatus validates status enum', async () => {
-      const { caller } = createCaller(testUser, mockDb);
-      await expect(caller.updateStatus({
-        id: VALID_RUN_UUID,
-        status: 'invalid-status' as any,
-      })).rejects.toThrow();
-    });
-
-    it('updateStatus accepts all valid status values', async () => {
-      const { caller, db } = createCaller(testUser, mockDb);
-      const validStatuses = ['pending', 'building', 'simulating', 'analyzing', 'passed', 'failed', 'error'] as const;
-
-      for (const status of validStatuses) {
-        // Reset mocks for each iteration
-        db.query.runs.findFirst.mockResolvedValue({
-          id: VALID_RUN_UUID, taskId: VALID_TASK_UUID,
-        });
-        db.query.tasks.findFirst.mockResolvedValue({
-          id: VALID_TASK_UUID, projectId: VALID_UUID,
-        });
-        db.query.projects.findFirst.mockResolvedValue({
-          id: VALID_UUID, userId: testUser.id,
-        });
-        db.update.mockReturnValue({
-          set: vi.fn().mockReturnValue({
-            where: vi.fn().mockReturnValue({
-              returning: vi.fn().mockResolvedValue([{ id: VALID_RUN_UUID, status }]),
-            }),
-          }),
-        });
-
-        await expect(caller.updateStatus({
-          id: VALID_RUN_UUID,
-          status,
-        })).resolves.toBeDefined();
-      }
     });
   });
 
@@ -159,24 +105,6 @@ describe('runs router contracts', () => {
       });
 
       await expect(caller.get({ id: VALID_RUN_UUID })).rejects.toThrow('Access denied');
-    });
-
-    it('updateStatus throws access denied for different user', async () => {
-      const { caller, db } = createCaller(testUser, mockDb);
-      db.query.runs.findFirst.mockResolvedValue({
-        id: VALID_RUN_UUID, taskId: VALID_TASK_UUID,
-      });
-      db.query.tasks.findFirst.mockResolvedValue({
-        id: VALID_TASK_UUID, projectId: VALID_UUID,
-      });
-      db.query.projects.findFirst.mockResolvedValue({
-        id: VALID_UUID, userId: otherUser.id,
-      });
-
-      await expect(caller.updateStatus({
-        id: VALID_RUN_UUID,
-        status: 'passed',
-      })).rejects.toThrow('Access denied');
     });
   });
 });

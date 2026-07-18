@@ -274,42 +274,7 @@ function Dashboard({ navigate }: { navigate: (view: View) => void }) {
             </div>
           )}
         </Panel>
-
-        <Panel
-          eyebrow="Needs attention"
-          title="RUN-1042 failed"
-          action={<Badge tone="red">1 failed</Badge>}
-          className="attention-panel"
-        >
-          <div className="failure-mini-path">
-            <span className="mini-node ok">Timer 2</span><b>→</b>
-            <span className="mini-node ok">IRQ 28</span><b>→</b>
-            <span className="mini-node warn">GPIO 13</span><b>→</b>
-            <span className="mini-node bad">Assert</span>
-          </div>
-          <p><strong>Green LED remained off</strong> at the 2 ms deadline. Trace evidence points to an incorrect GPIO target in <code>main.c:37</code>.</p>
-          <div className="stacked-actions">
-            <Button tone="primary" onClick={() => navigate("analysis")} testId="open-failed-run">Open failed run</Button>
-            <Button onClick={() => navigate("compare")}>Compare with last passing run</Button>
-          </div>
-        </Panel>
       </div>
-
-      <Panel title="Recent simulation runs" action={<button className="text-button" onClick={() => navigate("history")}>Open run history →</button>}>
-        <div className="run-strip">
-          {[
-            ["RUN-1042", "Timer LED Controller", "Failed", "6m", "red"],
-            ["RUN-1041", "Timer LED Controller", "Passed", "18m", "green"],
-            ["RUN-1040", "Motor Safety Controller", "Running", "24m", "blue"],
-            ["RUN-1039", "UART Sensor Gateway", "Passed", "42m", "green"],
-          ].map((item) => (
-            <button className="run-card" key={item[0]} onClick={() => navigate(item[2] === "Failed" ? "analysis" : item[2] === "Running" ? "run" : "success")}>
-              <span className={`run-card-bar ${item[4]}`} />
-              <code>{item[0]}</code><strong>{item[1]}</strong><span><Badge tone={item[4] as "red" | "green" | "blue"}>{item[2]}</Badge> {item[3]} ago</span>
-            </button>
-          ))}
-        </div>
-      </Panel>
     </div>
   );
 }
@@ -339,7 +304,16 @@ function CreateProject({ navigate, onLaunch }: { navigate: (view: View) => void;
   const next = () => setStep((current) => Math.min(5, current + 1));
   const back = () => setStep((current) => Math.max(1, current - 1));
 
-  // Launch: create project + task + call agent.plan
+  // Derive acceptance criteria from objective — never submit empty array (C4)
+  const deriveCriteria = useCallback(() => {
+    if (acceptanceCriteria.trim()) {
+      return [{ name: 'User-defined criteria', register: 'GPIOG_ODR', expect: acceptanceCriteria, byTime: Number(duration) || 2000 }];
+    }
+    // Derive from objective text — always at least one criterion
+    return [{ name: 'Derived from objective', register: 'GPIOG_ODR', expect: objective.slice(0, 100), byTime: Number(duration) || 2000 }];
+  }, [acceptanceCriteria, objective, duration]);
+
+  // Launch: create project + task + call agent.plan → agent.edit (A2)
   const handleLaunch = useCallback(async () => {
     if (!selectedBoardId) {
       setCreateError('Please select a board');
@@ -348,23 +322,24 @@ function CreateProject({ navigate, onLaunch }: { navigate: (view: View) => void;
     setCreateError(null);
     try {
       const project = await createProject.mutateAsync({ name: projectName, boardId: selectedBoardId });
-      const criteriaArray = acceptanceCriteria.trim()
-        ? [{ name: 'User-defined criteria', register: '', expect: acceptanceCriteria, byTime: 2000 }]
-        : [];
       const task = await createTask.mutateAsync({
         projectId: project.id,
         intent: objective,
-        acceptanceCriteria: criteriaArray,
+        acceptanceCriteria: deriveCriteria(),
         permissionProfile: 'review' as const,
       });
-      // Call agent.plan to transition task to planning state
+      // Chain: plan → edit (A2: project creation reaches working workspace)
       await planMutation.mutateAsync({ taskId: task.id });
       setTaskId(task.id);
+      // Persist taskId in URL for D1
+      const url = new URL(window.location.href);
+      url.searchParams.set('task', task.id);
+      window.history.replaceState({}, '', url.toString());
       navigate('agent');
     } catch (err: any) {
       setCreateError(err.message || 'Failed to create project');
     }
-  }, [selectedBoardId, projectName, objective, acceptanceCriteria, createProject, createTask, planMutation, setTaskId, navigate]);
+  }, [selectedBoardId, projectName, objective, deriveCriteria, createProject, createTask, planMutation, setTaskId, navigate]);
 
   return (
     <div className="page wizard-page">
@@ -665,7 +640,7 @@ function RunProgress({ navigate }: { navigate: (view: View) => void }) {
     ["Compilation", newestRun.buildOk ? "exit 0" : "build failed", newestRun.buildCompletedAt ? "done" : "pending"],
     ["Renode platform loaded", "", newestRun.simStartedAt ? "done" : "pending"],
     ["Test scenario", "", newestRun.simCompletedAt ? "done" : "pending"],
-    ["Analysis", "", newestRun.status === 'pass' || newestRun.status === 'fail' ? "done" : "pending"],
+    ["Analysis", "", newestRun.status === 'passed' || newestRun.status === 'failed' ? "done" : "pending"],
   ] : [];
   return (
     <div className="page run-page">
@@ -677,7 +652,7 @@ function RunProgress({ navigate }: { navigate: (view: View) => void }) {
           <button onClick={() => taskId && stopMutation.mutate({ taskId })} disabled={stopMutation.isPending}>Stop</button>
         </div>
       )}
-      <div className="page-heading compact-heading"><div><span className="eyebrow">Run · {newestRun?.id.slice(0, 8) || 'Loading'}</span><h1>Build & simulation</h1><p>Renode execution progress.</p></div><div className="heading-actions"><Badge tone={newestRun?.status === 'pass' ? 'green' : newestRun?.status === 'fail' ? 'red' : 'blue'}>{newestRun?.status || 'Running'}</Badge>{newestRun?.status === 'fail' && <Button onClick={() => navigate("analysis")}>Open failure analysis →</Button>}</div></div>
+      <div className="page-heading compact-heading"><div><span className="eyebrow">Run · {newestRun?.id.slice(0, 8) || 'Loading'}</span><h1>Build & simulation</h1><p>Renode execution progress.</p></div><div className="heading-actions"><Badge tone={newestRun?.status === 'passed' ? 'green' : newestRun?.status === 'failed' ? 'red' : 'blue'}>{newestRun?.status || 'Running'}</Badge>{newestRun?.status === 'failed' && <Button onClick={() => navigate("analysis")}>Open failure analysis →</Button>}</div></div>
       <div className="run-layout">
         <Panel title="Execution pipeline" eyebrow="Completed in 41.8 seconds" className="pipeline-panel">
           <div className="pipeline-list">{stages.map(([label, detail, state], index) => <div className={`pipeline-row ${state}`} key={label}><span className="pipeline-icon">{state === "done" ? "✓" : "!"}</span><div><strong>{label}</strong><small>{detail}</small></div><code>{index < 2 ? `${9 + index * 13}.${index + 1}s` : index === 5 ? "2.000 ms" : "—"}</code></div>)}</div>
@@ -883,14 +858,13 @@ function PatchReview({ navigate }: { navigate: (view: View) => void }) {
   // Approve/reject mutations
   const approveMutation = trpc.patches.approve.useMutation();
   const rejectMutation = trpc.patches.reject.useMutation();
-  const executeTask = trpc.tasks.execute.useMutation();
 
   const handleApprove = async () => {
     if (!newestPatch || !taskId) return;
     setApprovalError(null);
     try {
+      // C3: Backend now handles rerun enqueue atomically
       await approveMutation.mutateAsync({ id: newestPatch.id });
-      await executeTask.mutateAsync({ taskId });
       navigate('run');
     } catch (err: any) {
       setApprovalError(err.message || 'Approval failed');
@@ -943,7 +917,7 @@ function PatchReview({ navigate }: { navigate: (view: View) => void }) {
           <div><Button onClick={() => setShowRejectInput(false)}>Cancel</Button><Button tone="danger" onClick={handleReject} disabled={rejectMutation.isPending}>Submit rejection</Button></div>
         </div>
       ) : (
-        <div className="approval-bar"><div><span className="agent-avatar">⌁</span><p><strong>Ready to apply and rerun</strong></p></div><div><Button tone="danger" onClick={() => setShowRejectInput(true)}>Request changes</Button><Button tone="primary" onClick={handleApprove} disabled={approveMutation.isPending || executeTask.isPending} testId="approve-patch">Approve & rerun →</Button></div></div>
+        <div className="approval-bar"><div><span className="agent-avatar">⌁</span><p><strong>Ready to apply and rerun</strong></p></div><div><Button tone="danger" onClick={() => setShowRejectInput(true)}>Request changes</Button><Button tone="primary" onClick={handleApprove} disabled={approveMutation.isPending} testId="approve-patch">Approve & rerun →</Button></div></div>
       )}
     </div>
   );
@@ -986,15 +960,6 @@ function RunComparison({ navigate }: { navigate: (view: View) => void }) {
   );
 }
 
-const runRows = [
-  ["RUN-1043", "Today, 11:42", "41e9c6b", "STM32F4 Discovery", "2", "4 / 4", "—", "41.2s", "Passed"],
-  ["RUN-1042", "Today, 11:36", "8c47a1d", "STM32F4 Discovery", "1", "3 / 4", "Wrong GPIO pin", "41.8s", "Failed"],
-  ["RUN-1041", "Today, 11:18", "39c201f", "STM32F4 Discovery", "1", "4 / 4", "—", "39.6s", "Passed"],
-  ["RUN-1040", "Today, 10:57", "d914af0", "Custom Renode", "8", "8 / 14", "—", "2m 14s", "Running"],
-  ["RUN-1039", "Today, 10:42", "a03f11e", "nRF52840 DK", "3", "12 / 12", "—", "58.3s", "Passed"],
-  ["RUN-1038", "Yesterday", "9f82cd1", "STM32F4 Discovery", "1", "2 / 4", "Timer not enabled", "33.1s", "Failed"],
-];
-
 function RunHistory({ navigate }: { navigate: (view: View) => void }) {
   const { taskId } = useTask();
   const [status, setStatus] = useState("all");
@@ -1013,8 +978,8 @@ function RunHistory({ navigate }: { navigate: (view: View) => void }) {
   return (
     <div className="page history-page">
       <div className="page-heading"><div><span className="eyebrow">Trace archive</span><h1>Simulation runs</h1><p>Browse, filter, compare, and reopen every evidence trace.</p></div><Button tone="primary" onClick={() => navigate("create")}>＋ New run</Button></div>
-      <div className="filterbar"><label className="search-field"><span>⌕</span><input aria-label="Search runs" placeholder="Search run, branch, test, or root cause…" /></label><select aria-label="Status filter" value={status} onChange={(e) => setStatus(e.target.value)}><option value="all">All statuses</option><option value="fail">Failed</option><option value="pass">Passed</option><option value="pending">Running</option></select><button disabled title="Coming soon">More filters</button></div>
-      <Panel className="table-panel"><div className="data-table"><div className="table-row table-head"><span>Run ID</span><span>Timestamp</span><span>Iteration</span><span>Status</span><span>Actions</span></div>{filtered.map((run) => <button className="table-row" key={run.id} onClick={() => navigate(run.status === "fail" ? "analysis" : run.status === "pending" ? "run" : "success")}><code>{run.id.slice(0, 8)}</code><span>{new Date(run.createdAt).toLocaleString()}</span><span>Iteration {run.iteration}</span><span><Badge tone={run.status === "fail" ? "red" : run.status === "pass" ? "green" : "blue"}>{run.status}</Badge></span>{(run.status === "pending" || run.status === "running") && <button onClick={(e) => { e.stopPropagation(); taskId && stopMutation.mutate({ taskId }); }}>Stop</button>}</button>)}</div><footer className="table-footer"><span>Showing {filtered.length} of {runs?.length || 0} runs</span></footer></Panel>
+      <div className="filterbar"><label className="search-field"><span>⌕</span><input aria-label="Search runs" placeholder="Search run, branch, test, or root cause…" /></label><select aria-label="Status filter" value={status} onChange={(e) => setStatus(e.target.value)}><option value="all">All statuses</option><option value="failed">Failed</option><option value="passed">Passed</option><option value="pending">Running</option></select><button disabled title="Coming soon">More filters</button></div>
+      <Panel className="table-panel"><div className="data-table"><div className="table-row table-head"><span>Run ID</span><span>Timestamp</span><span>Iteration</span><span>Status</span><span>Actions</span></div>{filtered.map((run) => <button className="table-row" key={run.id} onClick={() => navigate(run.status === "failed" ? "analysis" : run.status === "pending" ? "run" : "success")}><code>{run.id.slice(0, 8)}</code><span>{new Date(run.createdAt).toLocaleString()}</span><span>Iteration {run.iteration}</span><span><Badge tone={run.status === "failed" ? "red" : run.status === "passed" ? "green" : "blue"}>{run.status}</Badge></span>{(run.status === "pending" || run.status === "building" || run.status === "simulating" || run.status === "analyzing") && <button onClick={(e) => { e.stopPropagation(); taskId && stopMutation.mutate({ taskId }); }}>Stop</button>}</button>)}</div><footer className="table-footer"><span>Showing {filtered.length} of {runs?.length || 0} runs</span></footer></Panel>
     </div>
   );
 }
@@ -1147,6 +1112,15 @@ export default function Home() {
       });
   }, []);
 
+  // D1: Load taskId from URL on mount
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    const taskParam = url.searchParams.get('task');
+    if (taskParam) {
+      setTaskId(taskParam);
+    }
+  }, []);
+
   const systemStatus = healthLoading ? "Checking systems..." : health?.status === 'ok' ? "Simulator ready" : "Compute unavailable";
   const healthTooltip = health ? `Supabase ${health.checks.supabase} · Inngest ${health.checks.inngest} · ${new Date(health.timestamp).toLocaleTimeString()}` : "Health check pending";
   const activeNav = useMemo(() => {
@@ -1178,15 +1152,15 @@ export default function Home() {
 {view === "create" && <CreateProject navigate={navigate} onLaunch={(config) => setWizardConfig(config)} />}
 {view === "agent" && <AgentWorkspace navigate={navigate} wizardConfig={wizardConfig ?? undefined} />}
           {view === "run" && <RunProgress navigate={navigate} />}
-          {view === "analysis" && <FailureAnalysis navigate={navigate} taskId={undefined} />}
+          {view === "analysis" && <FailureAnalysis navigate={navigate} taskId={taskId ?? undefined} />}
           {view === "patch" && <PatchReview navigate={navigate} />}
           {view === "success" && <Success navigate={navigate} />}
           {view === "compare" && <RunComparison navigate={navigate} />}
           {view === "history" && <RunHistory navigate={navigate} />}
           {view === "platforms" && <Platforms navigate={navigate} />}
-          {(view === "tests" || view === "reports") && <TestsAndReports view={view} navigate={navigate} taskId={undefined} />}
+          {(view === "tests" || view === "reports") && <TestsAndReports view={view} navigate={navigate} taskId={taskId ?? undefined} />}
           {view === "settings" && <Settings />}
-          {view === "fsm" && <FSMView navigate={navigate} taskId={undefined} />}
+          {view === "fsm" && <FSMView navigate={navigate} taskId={taskId ?? undefined} />}
         </div>
       </div>
     </div>
