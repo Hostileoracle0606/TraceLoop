@@ -1,3 +1,4 @@
+/// <reference types="vite/client" />
 import { createTRPCReact, httpBatchLink } from '@trpc/react-query';
 import type { AppRouter } from '@backend/trpc/router';
 

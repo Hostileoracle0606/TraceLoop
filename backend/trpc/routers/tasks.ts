@@ -393,6 +393,24 @@ export const tasksRouter = router({
         metadata: { reason: input.reason },
       });
 
+      // Look up the latest run for this task to get the runId
+      const latestRun = await ctx.db.query.runs.findFirst({
+        where: eq(runs.taskId, input.taskId),
+        orderBy: [desc(runs.createdAt)],
+      });
+
+      // Send TASK_CANCELLED event to Inngest if there's an active run
+      if (latestRun && !['passed', 'failed', 'error'].includes(latestRun.status)) {
+        await inngest.send({
+          name: Events.TASK_CANCELLED,
+          data: {
+            taskId: input.taskId,
+            runId: latestRun.id,
+            reason: input.reason ?? 'user-cancelled',
+          },
+        });
+      }
+
       return updatedTask;
     }),
 });

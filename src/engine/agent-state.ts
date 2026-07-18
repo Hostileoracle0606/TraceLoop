@@ -88,11 +88,11 @@ export function allowedActions(state: AgentState): AgentAction[] {
 const VALID_TRANSITIONS: Record<AgentState, ReadonlySet<AgentState>> = {
   'clarification-needed': new Set(['planning', 'stopped']),
   'planning': new Set(['editing', 'clarification-needed', 'stopped']),
-  'editing': new Set(['building', 'stopped']),
+  'editing': new Set(['building', 'editing', 'stopped']),
   'building': new Set(['simulating', 'editing', 'blocked', 'stopped']),
   'simulating': new Set(['analyzing', 'blocked', 'stopped']),
   'analyzing': new Set(['completed', 'patching', 'blocked', 'stopped']),
-  'patching': new Set(['rerunning', 'editing', 'stopped']),
+  'patching': new Set(['rerunning', 'editing', 'patching', 'stopped']),
   'rerunning': new Set(['building', 'stopped']),
   'completed': new Set([]),
   'blocked': new Set(['stopped']),
@@ -183,7 +183,8 @@ export type TransitionReason =
   | 'budget-exhausted'
   | 'no-progress'
   | 'user-cancelled'
-  | 'user-intervention';
+  | 'user-intervention'
+  | 'awaiting-approval';
 
 /**
  * A state transition event. Recorded in the activity log for auditability.

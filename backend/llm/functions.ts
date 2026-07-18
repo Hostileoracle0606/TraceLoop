@@ -1,7 +1,9 @@
-import { generateText } from 'ai';
+import { generateText, generateObject } from 'ai';
+import { z } from 'zod';
 import { getLLMProvider } from './provider';
 import { getSystemPrompt } from './prompts';
-import { type FileOperation } from './tools';
+import { type FileOperation, fileOperationSchema } from './tools';
+import { isProtectedFile } from '../../src/engine/permissions';
 
 /**
  * LLM functions for each FSM state that requires LLM capability.
@@ -51,6 +53,32 @@ export interface PatchProposal {
   summary: string;
   confidence: number;
 }
+
+// ── Zod schemas for LLM output validation ─────────────────────────
+
+const planStepSchema = z.object({
+  file: z.string().min(1),
+  action: z.enum(['create', 'modify', 'delete']),
+  description: z.string().min(1),
+});
+
+const planSchema = z.object({
+  steps: z.array(planStepSchema).min(1),
+  summary: z.string().min(1),
+});
+
+const patchProposalSchema = z.object({
+  file: z.string().min(1),
+  before: z.string(),
+  after: z.string(),
+  summary: z.string().min(1),
+  confidence: z.number().min(0).max(1),
+});
+
+const editSourceResultSchema = z.object({
+  operations: z.array(fileOperationSchema),
+  summary: z.string(),
+});
 
 // ── clarification-needed state ─────────────────────────────────────
 
@@ -110,19 +138,14 @@ export async function generatePlan(
     .map((c) => `- ${c.name}: ${c.register} should be ${c.expect} by ${c.byTime}µs`)
     .join('\n');
 
-  const { text } = await generateText({
+  const { object } = await generateObject({
     model,
+    schema: planSchema,
     system,
-    prompt: `Intent: ${intent}\n\nBoard: ${board.name} (${board.mcu}, ${board.architecture})\n\nAcceptance criteria:\n${criteriaContext}\n\nCurrent source files:\n${filesContext}\n\nRespond with a JSON object: {"steps": [{"file": string, "action": "create"|"modify"|"delete", "description": string}], "summary": string}`,
+    prompt: `Intent: ${intent}\n\nBoard: ${board.name} (${board.mcu}, ${board.architecture})\n\nAcceptance criteria:\n${criteriaContext}\n\nCurrent source files:\n${filesContext}`,
   });
 
-  // Parse the JSON response
-  try {
-    const parsed = JSON.parse(text);
-    return parsed as Plan;
-  } catch {
-    throw new Error(`Failed to parse plan from LLM response: ${text}`);
-  }
+  return object as Plan;
 }
 
 // ── editing state ──────────────────────────────────────────────────
@@ -151,22 +174,28 @@ export async function editSource(
     .map((s) => `- ${s.action} ${s.file}: ${s.description}`)
     .join('\n');
 
-  const { text } = await generateText({
+  const { object } = await generateObject({
     model,
+    schema: editSourceResultSchema,
     system,
-    prompt: `Approved plan:\n${planContext}${rootCauseContext}\n\nCurrent source files:\n${filesContext}\n\nRespond with a JSON object: {"operations": [{"type": "write"|"edit", "path": string, ...}], "summary": string}\nFor write: include "content" field. For edit: include "search" and "replace" fields.`,
+    prompt: `Approved plan:\n${planContext}${rootCauseContext}\n\nCurrent source files:\n${filesContext}`,
   });
 
-  // Parse the JSON response
-  try {
-    const parsed = JSON.parse(text);
-    return {
-      operations: parsed.operations || [],
-      summary: parsed.summary || text,
-    };
-  } catch {
-    return { operations: [], summary: text };
-  }
+  // Validate operations against policy
+  const validatedOps = object.operations.filter((op) => {
+    // Reject path traversal
+    if (op.path.includes('..')) return false;
+    // Reject protected files
+    if (isProtectedFile(op.path)) return false;
+    // Reject edit operations on files not in the approved plan
+    if (op.type === 'edit') {
+      const planFiles = new Set(plan.steps.map((s) => s.file));
+      if (!planFiles.has(op.path)) return false;
+    }
+    return true;
+  });
+
+  return { operations: validatedOps, summary: object.summary };
 }
 
 // ── patching state ─────────────────────────────────────────────────
@@ -187,17 +216,20 @@ export async function proposePatchLLM(
     .map(([path, content]) => `--- ${path} ---\n${content}`)
     .join('\n\n');
 
-  const { text } = await generateText({
+  const { object } = await generateObject({
     model,
+    schema: patchProposalSchema,
     system,
-    prompt: `Root cause: ${rootCause.source} wrote ${rootCause.register} (${rootCause.value}) at time ${rootCause.time}µs. ${rootCause.detail}\n\nExpected: ${assertion.register} should be ${assertion.expect} by ${assertion.byTime}µs (${assertion.name})\n\nCurrent source files:\n${filesContext}\n\nPropose a minimal patch to fix the root cause. Respond with JSON: {"file": string, "before": string, "after": string, "summary": string, "confidence": number (0-1)}`,
+    prompt: `Root cause: ${rootCause.source} wrote ${rootCause.register} (${rootCause.value}) at time ${rootCause.time}µs. ${rootCause.detail}\n\nExpected: ${assertion.register} should be ${assertion.expect} by ${assertion.byTime}µs (${assertion.name})\n\nCurrent source files:\n${filesContext}\n\nPropose a minimal patch to fix the root cause.`,
   });
 
-  // Parse the JSON response
-  try {
-    const parsed = JSON.parse(text);
-    return parsed as PatchProposal;
-  } catch {
-    throw new Error(`Failed to parse patch from LLM response: ${text}`);
+  // Enforce policy
+  if (isProtectedFile(object.file)) {
+    throw new Error(`Cannot patch protected file: ${object.file}`);
   }
+  if (object.file.includes('..')) {
+    throw new Error(`Invalid file path (path traversal): ${object.file}`);
+  }
+
+  return object as PatchProposal;
 }

@@ -78,7 +78,7 @@ export class CIRunner implements FirmwareJobRunner {
 
     return {
       build: { ok: true, log: buildLog ?? '' },
-      trace: traceLog !== undefined ? { log: traceLog } : undefined,
+      trace: traceLog != null ? { log: traceLog } : undefined,
     };
   }
 

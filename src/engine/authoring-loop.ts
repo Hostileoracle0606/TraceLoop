@@ -237,13 +237,12 @@ export async function runStatefulAuthoringLoop(
     // Type assertion needed because TypeScript narrows `state` to 'planning' (can't
     // track mutations through the recordTransition closure).
     if ((state as AgentState) === 'editing') {
-      // Check permission for write-source (only relevant on first iteration or after patch)
-      if (iterations === 0 || lastVm?.status === 'failed') {
+      // Only check write-source permission when about to modify files (after a failed attempt)
+      if (lastVm?.status === 'failed') {
         const permCheck = checkPermission(opts.profile, 'write-source');
         if (!permCheck.allowed) {
-          // In a real system, this would pause for user approval.
-          // For now, we proceed (assuming approval was granted).
-          // The permission check is recorded for audit purposes.
+          recordTransition('editing', 'awaiting-approval', 'system');
+          break;
         }
       }
       recordTransition('building', 'source-ready', 'agent');
@@ -295,16 +294,17 @@ export async function runStatefulAuthoringLoop(
     }
 
     // --- State: patching → rerunning ---
-    // Propose patch from root cause
-    const patch = proposePatch(files, vm.rootCause.register, req.assertion.register);
-    files = patch.files;
-
-    // Check permission for apply-patch
+    // Check permission BEFORE proposing/applying patch
     const patchPermCheck = checkPermission(opts.profile, 'apply-patch');
     if (!patchPermCheck.allowed) {
-      // In a real system, this would pause for user approval.
-      // For now, we proceed (assuming approval was granted).
+      // Pause for user approval — do NOT mutate files
+      recordTransition('patching', 'awaiting-approval', 'system');
+      break;
     }
+
+    // Permission granted — propose and apply patch
+    const patch = proposePatch(files, vm.rootCause.register, req.assertion.register);
+    files = patch.files;
 
     recordTransition('rerunning', 'patch-approved', 'user');
 
@@ -338,6 +338,9 @@ export async function runStatefulAuthoringLoop(
     } else {
       result = { status: 'build-failed', buildLog: lastBuildLog ?? 'Cancelled before first build', iterations };
     }
+  } else if (finalState === 'patching') {
+    // Awaiting approval — return current state
+    result = { status: 'gave-up', vm: lastVm as RunViewModel, files, iterations };
   } else {
     // Fallback: shouldn't happen, but handle it
     result = { status: 'gave-up', vm: lastVm as RunViewModel, files, iterations };

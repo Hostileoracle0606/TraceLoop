@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, timestamp, jsonb, integer, boolean, varchar, index } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, text, timestamp, jsonb, integer, boolean, varchar, index, uniqueIndex } from 'drizzle-orm/pg-core';
 import { relations } from 'drizzle-orm';
 
 // ============================================================================
@@ -46,7 +46,7 @@ export const boards = pgTable('boards', {
   status: varchar('status', { length: 16 }).default('active'), // active, deprecated, beta
   createdAt: timestamp('created_at').defaultNow().notNull(),
 }, (table) => ({
-  nameUniqueIdx: index('boards_name_unique_idx').on(table.name).unique(),
+  nameUniqueIdx: uniqueIndex('boards_name_unique_idx').on(table.name),
 }));
 
 export const boardsRelations = relations(boards, ({ many }) => ({
