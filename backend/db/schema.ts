@@ -123,7 +123,7 @@ export const tasksRelations = relations(tasks, ({ one, many }) => ({
 // Runs (build + simulate + analyze)
 // ============================================================================
 
-export type RunStatus = 'pending' | 'building' | 'simulating' | 'analyzing' | 'passed' | 'failed' | 'error';
+export type RunStatus = 'pending' | 'building' | 'simulating' | 'analyzing' | 'passed' | 'failed' | 'error' | 'cancelled';
 
 export const runs = pgTable('runs', {
   id: uuid('id').primaryKey().defaultRandom(),

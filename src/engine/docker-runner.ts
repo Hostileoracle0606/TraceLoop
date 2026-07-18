@@ -40,7 +40,7 @@ export class DockerRunner implements FirmwareJobRunner {
 
       let buildLog: string;
       try {
-        const { stdout, stderr } = await execFileAsync(buildCmd[0], buildCmd.slice(1), {
+        const { stdout, stderr } = await execFileAsync(buildCmd[0]!, buildCmd.slice(1), {
           timeout: this.timeout,
           maxBuffer: 10 * 1024 * 1024,
         });
@@ -66,7 +66,7 @@ export class DockerRunner implements FirmwareJobRunner {
 
       let traceLog: string;
       try {
-        const { stdout, stderr } = await execFileAsync(renodeCmd[0], renodeCmd.slice(1), {
+        const { stdout, stderr } = await execFileAsync(renodeCmd[0]!, renodeCmd.slice(1), {
           timeout: 60_000, // 1-minute sim timeout
           maxBuffer: 10 * 1024 * 1024,
         });

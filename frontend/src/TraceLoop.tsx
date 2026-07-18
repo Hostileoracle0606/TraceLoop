@@ -1,9 +1,29 @@
 "use client";
 
-import { useMemo, useState, useCallback } from "react";
+import { useMemo, useState, useCallback, createContext, useContext, useEffect } from "react";
 import { runData, patch } from "./run";
 import firmwareSource from '../../firmware-zephyr/timer2-wrong-pin/src/main.c?raw';
 import { FSMIntegration } from './components/fsm';
+import { trpc } from './lib/trpc';
+
+type HealthStatus = {
+  status: 'ok' | 'degraded';
+  checks: {
+    supabase: 'ok' | 'error';
+    inngest: 'ok' | 'error';
+  };
+  timestamp: string;
+};
+
+type Metrics = {
+  runs24h: number;
+  successRate: number;
+  avgDurationMs: number;
+  activeTasks: number;
+  timestamp: string;
+};
+
+import { MonacoEditor } from './components/MonacoEditor';
 
 type View =
   | "dashboard"
@@ -20,6 +40,14 @@ type View =
   | "reports"
   | "settings"
   | "fsm";
+
+type WizardConfig = {
+  board: string;
+  source: string;
+  objective: string;
+  framework: string;
+  duration: string;
+};
 
 type EventId = "e1" | "e2" | "e3" | "e4" | "e5" | "e6";
 
@@ -38,16 +66,17 @@ type TraceEventVM = {
 // views, the event inspector, and the run header all follow.
 const events = runData.events as Record<EventId, TraceEventVM>;
 
-const navItems: { label: string; icon: string; view: View }[] = [
+const navItems: Array<{ label: string; icon: string; view: View } | { label: string; divider: true }> = [
   { label: "Projects", icon: "▦", view: "dashboard" },
   { label: "Agent", icon: "⌁", view: "agent" },
-  { label: "FSM", icon: "⊚", view: "fsm" },
   { label: "Runs", icon: "▶", view: "history" },
+  { label: "Project resources", divider: true },
   { label: "Platforms", icon: "▰", view: "platforms" },
   { label: "Tests", icon: "✓", view: "tests" },
   { label: "Reports", icon: "▤", view: "reports" },
-  { label: "Integrations", icon: "⊞", view: "settings" },
   { label: "Settings", icon: "⚙", view: "settings" },
+  { label: "Advanced", divider: true },
+  { label: "FSM", icon: "⊚", view: "fsm" },
 ];
 
 const screenTitles: Record<View, string> = {
@@ -61,8 +90,8 @@ const screenTitles: Record<View, string> = {
   compare: "Run comparison",
   history: "Run history",
   platforms: "Platform library",
-  tests: "Test scenarios",
-  reports: "Evidence reports",
+  tests: "Acceptance criteria",
+  reports: "Export evidence",
   settings: "Settings & integrations",
   fsm: "Agent State Machine",
 };
@@ -83,12 +112,14 @@ function Button({
   onClick,
   disabled,
   testId,
+  title,
 }: {
   children: React.ReactNode;
   tone?: "primary" | "secondary" | "danger" | "ghost";
   onClick?: () => void;
   disabled?: boolean;
   testId?: string;
+  title?: string;
 }) {
   return (
     <button
@@ -96,6 +127,7 @@ function Button({
       onClick={onClick}
       disabled={disabled}
       data-testid={testId}
+      title={title}
     >
       {children}
     </button>
@@ -148,33 +180,33 @@ function StatusIcon({ status }: { status: "pass" | "fail" | "running" }) {
   );
 }
 
+// Context for sharing current task ID across wizard → agent views
+const TaskContext = createContext<{ taskId: string | null; setTaskId: (id: string | null) => void } | null>(null);
+const useTask = () => {
+  const ctx = useContext(TaskContext);
+  if (!ctx) throw new Error('useTask must be used within TaskContext');
+  return ctx;
+};
+
 function Dashboard({ navigate }: { navigate: (view: View) => void }) {
-  const projects = [
-    {
-      name: "Timer LED Controller",
-      board: "STM32F4 Discovery",
-      branch: "agent/timer2-led",
-      status: "fail" as const,
-      activity: "Agent found causal path · 6m ago",
-      tests: "3 / 4 tests",
-    },
-    {
-      name: "UART Sensor Gateway",
-      board: "nRF52840 DK",
-      branch: "main · v0.8.2",
-      status: "pass" as const,
-      activity: "Patch committed · 42m ago",
-      tests: "12 / 12 tests",
-    },
-    {
-      name: "Motor Safety Controller",
-      board: "Custom Renode",
-      branch: "feat/current-limit",
-      status: "running" as const,
-      activity: "Simulating fault injection",
-      tests: "Run 8 of 14",
-    },
-  ];
+  const { data: projectsData, isLoading: projectsLoading } = trpc.projects.list.useQuery();
+  const [metrics, setMetrics] = useState<Metrics | null>(null);
+  const [metricsLoading, setMetricsLoading] = useState(true);
+
+  useEffect(() => {
+    fetch('/api/metrics')
+      .then(res => res.json())
+      .then((data: Metrics) => {
+        setMetrics(data);
+        setMetricsLoading(false);
+      })
+      .catch(() => {
+        setMetrics(null);
+        setMetricsLoading(false);
+      });
+  }, []);
+
+  const projects = projectsData ?? [];
 
   return (
     <div className="page dashboard-page">
@@ -190,81 +222,124 @@ function Dashboard({ navigate }: { navigate: (view: View) => void }) {
       </div>
 
       <div className="metric-grid">
-        <div className="metric"><span>Tests this week</span><strong>148</strong><small className="text-green">92.6% passing</small></div>
-        <div className="metric"><span>Simulation time</span><strong>03:42:18</strong><small>Renode compute</small></div>
-        <div className="metric"><span>Agent patches</span><strong>17</strong><small>14 approved</small></div>
-        <div className="metric"><span>Boards online</span><strong>8</strong><small className="text-green">All systems ready</small></div>
+        {metricsLoading ? (
+          <>
+            <div className="metric"><span>Runs (24h)</span><strong>—</strong><small>Loading...</small></div>
+            <div className="metric"><span>Success rate</span><strong>—</strong><small>Loading...</small></div>
+            <div className="metric"><span>Avg duration</span><strong>—</strong><small>Loading...</small></div>
+            <div className="metric"><span>Active tasks</span><strong>—</strong><small>Loading...</small></div>
+          </>
+        ) : metrics && metrics.runs24h > 0 ? (
+          <>
+            <div className="metric"><span>Runs (24h)</span><strong>{metrics.runs24h}</strong><small className="text-green">{metrics.successRate}% success</small></div>
+            <div className="metric"><span>Success rate</span><strong>{metrics.successRate}%</strong><small>{metrics.runs24h} runs</small></div>
+            <div className="metric"><span>Avg duration</span><strong>{(metrics.avgDurationMs / 1000).toFixed(1)}s</strong><small>Per run</small></div>
+            <div className="metric"><span>Active tasks</span><strong>{metrics.activeTasks}</strong><small>{metrics.activeTasks > 0 ? "In progress" : "Idle"}</small></div>
+          </>
+        ) : (
+          <>
+            <div className="metric"><span>Runs (24h)</span><strong>0</strong><small>No runs yet</small></div>
+            <div className="metric"><span>Success rate</span><strong>—</strong><small>No runs yet</small></div>
+            <div className="metric"><span>Avg duration</span><strong>—</strong><small>No runs yet</small></div>
+            <div className="metric"><span>Active tasks</span><strong>0</strong><small>No runs yet</small></div>
+          </>
+        )}
       </div>
 
       <div className="dashboard-grid">
         <Panel title="Recent projects" action={<button className="text-button">View all</button>} className="projects-panel">
-          <div className="project-list">
-            {projects.map((project) => (
-              <button
-                className="project-row"
-                key={project.name}
-                onClick={() => navigate(project.status === "fail" ? "analysis" : project.status === "running" ? "run" : "success")}
-              >
-                <span className="project-chip"><StatusIcon status={project.status} /></span>
-                <span className="project-main"><strong>{project.name}</strong><small>{project.board} · {project.branch}</small></span>
-                <span className="project-tests">{project.tests}</span>
-                <span className="project-activity">{project.activity}</span>
-                <span className="row-arrow">›</span>
-              </button>
-            ))}
-          </div>
-        </Panel>
-
-        <Panel
-          eyebrow="Needs attention"
-          title="RUN-1042 failed"
-          action={<Badge tone="red">1 failed</Badge>}
-          className="attention-panel"
-        >
-          <div className="failure-mini-path">
-            <span className="mini-node ok">Timer 2</span><b>→</b>
-            <span className="mini-node ok">IRQ 28</span><b>→</b>
-            <span className="mini-node warn">GPIO 13</span><b>→</b>
-            <span className="mini-node bad">Assert</span>
-          </div>
-          <p><strong>Green LED remained off</strong> at the 2 ms deadline. Trace evidence points to an incorrect GPIO target in <code>main.c:37</code>.</p>
-          <div className="stacked-actions">
-            <Button tone="primary" onClick={() => navigate("analysis")} testId="open-failed-run">Open failed run</Button>
-            <Button onClick={() => navigate("compare")}>Compare with last passing run</Button>
-          </div>
+          {projectsLoading ? (
+            <div style={{ padding: "2rem", textAlign: "center", color: "#888" }}>Loading projects...</div>
+          ) : projects.length === 0 ? (
+            <div style={{ padding: "2rem", textAlign: "center", color: "#888" }}>
+              <p><strong>No projects yet</strong></p>
+              <p style={{ fontSize: "0.875rem", marginTop: "0.5rem" }}>Create your first firmware project to get started</p>
+            </div>
+          ) : (
+            <div className="project-list">
+              {projects.map((project: any) => (
+                <button
+                  className="project-row"
+                  key={project.id}
+                  onClick={() => navigate("dashboard")}
+                  disabled
+                >
+                  <span className="project-chip"><StatusIcon status="pass" /></span>
+                  <span className="project-main"><strong>{project.name}</strong><small>{project.boardName || "No board"} · {project.description || "No description"}</small></span>
+                  <span className="project-tests">—</span>
+                  <span className="project-activity">Created {new Date(project.createdAt).toLocaleDateString()}</span>
+                  <span className="row-arrow">›</span>
+                </button>
+              ))}
+            </div>
+          )}
         </Panel>
       </div>
-
-      <Panel title="Recent simulation runs" action={<button className="text-button" onClick={() => navigate("history")}>Open run history →</button>}>
-        <div className="run-strip">
-          {[
-            ["RUN-1042", "Timer LED Controller", "Failed", "6m", "red"],
-            ["RUN-1041", "Timer LED Controller", "Passed", "18m", "green"],
-            ["RUN-1040", "Motor Safety Controller", "Running", "24m", "blue"],
-            ["RUN-1039", "UART Sensor Gateway", "Passed", "42m", "green"],
-          ].map((item) => (
-            <button className="run-card" key={item[0]} onClick={() => navigate(item[2] === "Failed" ? "analysis" : item[2] === "Running" ? "run" : "success")}>
-              <span className={`run-card-bar ${item[4]}`} />
-              <code>{item[0]}</code><strong>{item[1]}</strong><span><Badge tone={item[4] as "red" | "green" | "blue"}>{item[2]}</Badge> {item[3]} ago</span>
-            </button>
-          ))}
-        </div>
-      </Panel>
     </div>
   );
 }
 
 const wizardSteps = ["Choose board", "Firmware source", "Objective", "Test scenario", "Review & launch"];
 
-function CreateProject({ navigate }: { navigate: (view: View) => void }) {
+function CreateProject({ navigate, onLaunch }: { navigate: (view: View) => void; onLaunch: (config: WizardConfig) => void }) {
+  const { setTaskId } = useTask();
   const [step, setStep] = useState(1);
-  const [board, setBoard] = useState("STM32F4 Discovery");
+  const [selectedBoardId, setSelectedBoardId] = useState<string | null>(null);
   const [source, setSource] = useState("Generate new firmware with AI");
+  const [objective, setObjective] = useState("Use Timer 2 to turn on the green LED within 2 milliseconds.");
   const [framework, setFramework] = useState("Zephyr");
+  const [acceptanceCriteria, setAcceptanceCriteria] = useState("");
+  const [projectName, setProjectName] = useState("Timer LED Controller");
   const [duration, setDuration] = useState("3000");
+  const [createError, setCreateError] = useState<string | null>(null);
+
+  // Load boards from backend
+  const { data: boards, isLoading: boardsLoading } = trpc.boards.list.useQuery();
+
+  // Mutations for wizard launch
+  const createProject = trpc.projects.create.useMutation();
+  const createTask = trpc.tasks.create.useMutation();
+  const planMutation = trpc.agent.plan.useMutation();
 
   const next = () => setStep((current) => Math.min(5, current + 1));
   const back = () => setStep((current) => Math.max(1, current - 1));
+
+  // Derive acceptance criteria from objective — never submit empty array (C4)
+  const deriveCriteria = useCallback(() => {
+    if (acceptanceCriteria.trim()) {
+      return [{ name: 'User-defined criteria', register: 'GPIOG_ODR', expect: acceptanceCriteria, byTime: Number(duration) || 2000 }];
+    }
+    // Derive from objective text — always at least one criterion
+    return [{ name: 'Derived from objective', register: 'GPIOG_ODR', expect: objective.slice(0, 100), byTime: Number(duration) || 2000 }];
+  }, [acceptanceCriteria, objective, duration]);
+
+  // Launch: create project + task + call agent.plan → agent.edit (A2)
+  const handleLaunch = useCallback(async () => {
+    if (!selectedBoardId) {
+      setCreateError('Please select a board');
+      return;
+    }
+    setCreateError(null);
+    try {
+      const project = await createProject.mutateAsync({ name: projectName, boardId: selectedBoardId });
+      const task = await createTask.mutateAsync({
+        projectId: project.id,
+        intent: objective,
+        acceptanceCriteria: deriveCriteria(),
+        permissionProfile: 'review' as const,
+      });
+      // Chain: plan → edit (A2: project creation reaches working workspace)
+      await planMutation.mutateAsync({ taskId: task.id });
+      setTaskId(task.id);
+      // Persist taskId in URL for D1
+      const url = new URL(window.location.href);
+      url.searchParams.set('task', task.id);
+      window.history.replaceState({}, '', url.toString());
+      navigate('agent');
+    } catch (err: any) {
+      setCreateError(err.message || 'Failed to create project');
+    }
+  }, [selectedBoardId, projectName, objective, deriveCriteria, createProject, createTask, planMutation, setTaskId, navigate]);
 
   return (
     <div className="page wizard-page">
@@ -290,20 +365,19 @@ function CreateProject({ navigate }: { navigate: (view: View) => void }) {
             <div>
               <div className="section-intro"><span className="step-number">01</span><div><h2>Choose a virtual board</h2><p>Select a Renode-supported platform for the agent to build and test against.</p></div></div>
               <label className="search-field"><span>⌕</span><input aria-label="Search boards" placeholder="Search boards, MCUs, or architectures…" /></label>
+              {boardsLoading && <p>Loading boards...</p>}
               <div className="board-grid">
-                {[
-                  { name: "STM32F4 Discovery", mcu: "STM32F407VG", arch: "ARM Cortex-M4F", memory: "1 MB Flash · 192 KB RAM", recommended: true, caps: ["GPIO", "UART", "Timers", "SPI", "I²C"] },
-                  { name: "nRF52840 DK", mcu: "nRF52840", arch: "ARM Cortex-M4F", memory: "1 MB Flash · 256 KB RAM", caps: ["GPIO", "UART", "Timers", "SPI", "BLE"] },
-                  { name: "Custom Renode Platform", mcu: "Import .repl", arch: "User defined", memory: "From platform definition", caps: ["Custom peripherals", "Scripts"] },
-                ].map((item) => (
-                  <button className={`board-card ${board === item.name ? "selected" : ""}`} key={item.name} onClick={() => setBoard(item.name)}>
-                    {item.recommended && <Badge tone="blue">Recommended</Badge>}
-                    <div className="board-illustration"><span className="board-mcu">{item.name === "Custom Renode Platform" ? "+" : "MCU"}</span><i /><i /><i /><i /></div>
-                    <div className="board-card-title"><strong>{item.name}</strong><span className="radio-dot" /></div>
-                    <dl><div><dt>MCU</dt><dd>{item.mcu}</dd></div><div><dt>Architecture</dt><dd>{item.arch}</dd></div><div><dt>Memory</dt><dd>{item.memory}</dd></div></dl>
-                    <div className="cap-list">{item.caps.map((cap) => <span key={cap}>{cap}</span>)}</div>
-                  </button>
-                ))}
+                {boards?.map((item) => {
+                  const memoryStr = `${Math.round(item.memoryFlash / 1024)} KB Flash · ${Math.round(item.memoryRam / 1024)} KB RAM`;
+                  return (
+                    <button className={`board-card ${selectedBoardId === item.id ? "selected" : ""}`} key={item.id} onClick={() => setSelectedBoardId(item.id)}>
+                      <div className="board-illustration"><span className="board-mcu">MCU</span><i /><i /><i /><i /></div>
+                      <div className="board-card-title"><strong>{item.name}</strong><span className="radio-dot" /></div>
+                      <dl><div><dt>MCU</dt><dd>{item.mcu}</dd></div><div><dt>Architecture</dt><dd>{item.architecture}</dd></div><div><dt>Memory</dt><dd>{memoryStr}</dd></div></dl>
+                      <div className="cap-list">{item.peripherals.slice(0, 5).map((cap) => <span key={cap}>{cap}</span>)}</div>
+                    </button>
+                  );
+                })}
               </div>
             </div>
           )}
@@ -312,15 +386,15 @@ function CreateProject({ navigate }: { navigate: (view: View) => void }) {
             <div>
               <div className="section-intro"><span className="step-number">02</span><div><h2>Provide firmware source</h2><p>Start fresh with the agent or bring an existing project.</p></div></div>
               <div className="source-options">
-                {[
-                  ["Generate new firmware with AI", "⌁", "Describe the behavior and let the agent create the project."],
-                  ["Connect a Git repository", "⑂", "Import source and keep revisions synchronized."],
-                  ["Upload an existing project", "⇧", "Upload a ZIP containing source and build files."],
-                  ["Upload a compiled ELF", "ELF", "Skip compilation and begin from a binary."],
-                  ["Start from a sample", "▤", "Use a verified Renode firmware example."],
-                ].map(([name, icon, desc]) => (
-                  <button className={`source-option ${source === name ? "selected" : ""}`} key={name} onClick={() => setSource(name)}>
-                    <span className="source-icon">{icon}</span><div><strong>{name}</strong><small>{desc}</small></div><span className="radio-dot" />
+                {([
+                  { name: "Generate new firmware with AI", icon: "⌁", desc: "Describe the behavior and let the agent create the project.", disabled: false },
+                  { name: "Connect a Git repository", icon: "⌂", desc: "Not connected yet", disabled: true },
+                  { name: "Upload an existing project", icon: "⇧", desc: "Not connected yet", disabled: true },
+                  { name: "Upload a compiled ELF", icon: "ELF", desc: "Not connected yet", disabled: true },
+                  { name: "Start from a sample", icon: "▤", desc: "Use a verified Renode firmware example.", disabled: false },
+                ] as const).map((opt) => (
+                  <button className={`source-option ${source === opt.name ? "selected" : ""} ${opt.disabled ? "disabled" : ""}`} key={opt.name} onClick={() => !opt.disabled && setSource(opt.name)} disabled={opt.disabled}>
+                    <span className="source-icon">{opt.icon}</span><div><strong>{opt.name}</strong><small>{opt.desc}</small></div><span className="radio-dot" />
                   </button>
                 ))}
               </div>
@@ -330,7 +404,7 @@ function CreateProject({ navigate }: { navigate: (view: View) => void }) {
           {step === 3 && (
             <div>
               <div className="section-intro"><span className="step-number">03</span><div><h2>Describe the objective</h2><p>Use plain language. TraceLoop will convert it into source changes and measurable requirements.</p></div></div>
-              <label className="prompt-box"><span>Firmware objective</span><textarea defaultValue="Use Timer 2 to turn on the green LED within 2 milliseconds." /><small>⌁ The agent will inspect board capabilities before generating code.</small></label>
+              <label className="prompt-box"><span>Firmware objective</span><textarea value={objective} onChange={(e) => setObjective(e.target.value)} /><small>⌁ The agent will inspect board capabilities before generating code.</small></label>
               <h3 className="subheading">Structured requirements</h3>
               <div className="requirements-grid">
                 {[["Target LED", "Green LED"], ["Trigger", "Timer 2"], ["Deadline", "2 ms"], ["Expected state", "On"], ["Language", "C"]].map(([label, value]) => <label key={label}><span>{label}</span><input defaultValue={value} /></label>)}
@@ -342,23 +416,15 @@ function CreateProject({ navigate }: { navigate: (view: View) => void }) {
           {step === 4 && (
             <div>
               <div className="section-intro"><span className="step-number">04</span><div><h2>Configure test scenario</h2><p>Define the hardware inputs and outcome TraceLoop should verify.</p></div></div>
-              <div className="scenario-layout">
+              <label className="prompt-box"><span>Acceptance criteria (optional)</span><textarea value={acceptanceCriteria} onChange={(e) => setAcceptanceCriteria(e.target.value)} placeholder="Specify measurable test conditions..." /><small>The agent will derive default criteria from your objective if left empty.</small></label>
+              <details className="advanced-disclosure">
+                <summary>Advanced test details</summary>
                 <div className="scenario-form">
                   <label><span>Simulation duration</span><div className="input-unit"><input value={duration} onChange={(e) => setDuration(e.target.value)} /><small>µs</small></div></label>
                   <h3>Timed inputs</h3>
-                  <div className="event-form-row"><span className="event-type">GPIO</span><input aria-label="Input time" defaultValue="500" /><span>µs</span><select aria-label="GPIO input"><option>Button PA0</option></select><select aria-label="GPIO value"><option>Pressed</option></select><button aria-label="Delete input">×</button></div>
-                  <button className="add-row">＋ Add GPIO, UART, sensor, or network event</button>
-                  <h3>Expected assertions</h3>
-                  <div className="assertion-editor"><span>✓</span><select aria-label="Assertion subject"><option>Green LED</option></select><select aria-label="Assertion condition"><option>must be ON by</option></select><input aria-label="Assertion time" defaultValue="2000" /><small>µs</small></div>
-                  <button className="add-row">＋ Add assertion</button>
+                  <p className="text-muted">Configure GPIO, UART, or network events (advanced)</p>
                 </div>
-                <Panel title="Scenario timeline" className="scenario-preview">
-                  <div className="scenario-ruler"><span>0</span><span>1000 µs</span><span>2000 µs</span><span>3000 µs</span></div>
-                  <div className="scenario-lane"><label>Button PA0</label><div><i className="event-pin" style={{ left: "16%" }} /></div></div>
-                  <div className="scenario-lane"><label>Timer 2</label><div><i className="event-pin blue" style={{ left: "33%" }} /></div></div>
-                  <div className="scenario-lane"><label>Assertion</label><div><i className="deadline" style={{ left: "66%" }}>Deadline</i></div></div>
-                </Panel>
-              </div>
+              </details>
             </div>
           )}
 
@@ -368,9 +434,9 @@ function CreateProject({ navigate }: { navigate: (view: View) => void }) {
               <div className="review-grid">
                 <Panel title="Project configuration">
                   <div className="review-list">
-                    <div><span>Board platform</span><strong>{board}</strong></div>
+                    <div><span>Board platform</span><strong>{boards?.find(b => b.id === selectedBoardId)?.name || 'Not selected'}</strong></div>
                     <div><span>Firmware source</span><strong>{source}</strong></div>
-                    <div><span>Objective</span><strong>Timer 2 → green LED within 2 ms</strong></div>
+                    <div><span>Objective</span><strong>{objective || "Not specified"}</strong></div>
                     <div><span>Framework</span><strong>{framework} · C</strong></div>
                     <div><span>Build command</span><code>west build -b stm32f4_disco</code></div>
                   </div>
@@ -389,10 +455,11 @@ function CreateProject({ navigate }: { navigate: (view: View) => void }) {
             </div>
           )}
 
+          {createError && <div className="error-banner">{createError}</div>}
           <footer className="wizard-footer">
             <Button tone="ghost" onClick={step === 1 ? () => navigate("dashboard") : back}>{step === 1 ? "Cancel" : "← Back"}</Button>
             <span>Step {step} of 5</span>
-            <Button tone="primary" onClick={step === 5 ? () => navigate("agent") : next} testId={step === 5 ? "launch-agent" : "wizard-next"}>{step === 5 ? "Generate and run firmware  →" : "Continue  →"}</Button>
+            <Button tone="primary" onClick={step === 5 ? () => { handleLaunch(); onLaunch({ board: boards?.find(b => b.id === selectedBoardId)?.name || '', source, objective, framework, duration }); } : next} disabled={createProject.isPending || createTask.isPending || planMutation.isPending} testId={step === 5 ? "launch-agent" : "wizard-next"}>{step === 5 ? (createProject.isPending || createTask.isPending || planMutation.isPending ? "Creating..." : "Create project & review plan →") : "Continue  →"}</Button>
           </footer>
         </main>
       </div>
@@ -444,75 +511,103 @@ interface ChatMessage {
   text: string;
 }
 
-function AgentWorkspace({ navigate }: { navigate: (view: View) => void }) {
-  // Engine-derived steps: reflect the actual pipeline state from runData.
-  const runFailed = runData.run.status === 'fail';
-  const steps = [
-    ["Inspecting board capabilities", "done", `${runData.run.board}`],
-    ["Generating firmware", "done", `${firmwareSource.split('\n').length} lines`],
-    ["Compiling ELF", "done", "west build · exit 0"],
-    ["Loading ELF into Renode", "done", "STM32F4 platform ready"],
-    ["Running test scenario", "done", "green_led_should_turn_on"],
-    ["Detecting failure", runFailed ? "failed" : "done", runFailed ? `Assertion failed at 2000 µs` : "All assertions passed"],
-  ] as const;
-
-  const [messages, setMessages] = useState<ChatMessage[]>([
-    { role: 'user', text: 'Use Timer 2 to turn on the green LED within 2 milliseconds.' },
-    { role: 'agent', text: `I'll inspect the board, generate Zephyr firmware, compile it, and test the behavior in Renode.` },
-  ]);
+function AgentWorkspace({ navigate, wizardConfig }: { navigate: (view: View) => void; wizardConfig?: WizardConfig }) {
+  const { taskId } = useTask();
   const [input, setInput] = useState('');
+  const [selectedFile, setSelectedFile] = useState<string | null>(null);
 
-  const sendMessage = useCallback(() => {
+  // Poll task data every 2 seconds
+  const { data: task } = trpc.tasks.get.useQuery(
+    { id: taskId! },
+    { enabled: !!taskId, refetchInterval: 2000 }
+  );
+
+  // Load activity log for execution plan
+  const { data: activityLog } = trpc.tasks.getActivityLog.useQuery(
+    { taskId: taskId! },
+    { enabled: !!taskId }
+  );
+
+  // Clarify mutation - only available in clarification-needed state
+  const clarifyMutation = trpc.agent.clarify.useMutation();
+
+  // Stop task
+  const stopMutation = trpc.tasks.stop.useMutation();
+
+  const sendMessage = useCallback(async () => {
     const text = input.trim();
-    if (!text) return;
-    setMessages(prev => [...prev, { role: 'user', text }]);
+    if (!text || !taskId || task?.status !== 'clarification-needed') return;
     setInput('');
-    // Agent acknowledges — in a full implementation this would call the engine.
-    setTimeout(() => {
-      setMessages(prev => [...prev, {
-        role: 'agent',
-        text: runFailed
-          ? `The trace is complete. ${runData.rootCauseText}`
-          : 'All assertions passed. The firmware is correct.',
-      }]);
-    }, 300);
-  }, [input, runFailed]);
+    try {
+      await clarifyMutation.mutateAsync({ taskId });
+    } catch (err: any) {
+      console.error('Failed to send clarification:', err);
+    }
+  }, [input, taskId, task?.status, clarifyMutation]);
+
+  // Map activity log to execution steps
+  const steps = useMemo(() => {
+    if (!activityLog) return [];
+    return activityLog.map((log) => [log.toState, log.reason, log.createdAt || ''] as const);
+  }, [activityLog]);
+
+  // File tree from task.currentFiles
+  const fileKeys = Object.keys(task?.currentFiles || {});
+  const currentFileContent = selectedFile && task?.currentFiles?.[selectedFile];
+
+  // Auto-select first file when loaded
+  useMemo(() => {
+    if (fileKeys.length > 0 && !selectedFile) {
+      setSelectedFile(fileKeys[0]);
+    }
+  }, [fileKeys, selectedFile]);
 
   return (
     <div className="workspace-page agent-page">
-      <div className="process-strip">
-        {['Plan', 'Generate', 'Build', 'Simulate', 'Analyze', 'Patch'].map((item, index) => <div key={item} className={index < 5 ? "done" : runFailed ? "pending" : "done"}><span>{index < 4 ? "✓" : index === 4 ? (runFailed ? "!" : "✓") : runFailed ? "!" : "✓"}</span><strong>{item}</strong></div>)}
-      </div>
+      {/* Task-attention bar */}
+      {task && (
+        <div className="task-attention-bar">
+          <span>{task.status}</span>
+          <span>· Iteration {task.iteration}</span>
+          <span>· {task.permissionProfile}</span>
+          <button onClick={() => taskId && stopMutation.mutate({ taskId })} disabled={stopMutation.isPending}>Stop</button>
+        </div>
+      )}
       <div className="ide-layout">
         <aside className="file-tree">
-          <div className="file-tree-title"><strong>PROJECT</strong><button>•••</button></div>
-          <div className="tree-row folder">⌄ <span>timer-led-controller</span></div>
-          <div className="tree-row folder indent">⌄ <span>src</span></div>
-          <button className="tree-row file indent-2 active"><b>C</b><span>main.c</span><small>●</small></button>
-          <button className="tree-row file indent"><b>◈</b><span>CMakeLists.txt</span></button>
-          <button className="tree-row file indent"><b>≡</b><span>prj.conf</span></button>
-          <div className="tree-row folder indent">⌄ <span>boards</span></div>
-          <button className="tree-row file indent-2"><b>◈</b><span>stm32f4_disco.overlay</span></button>
-          <div className="tree-section"><strong>OUTLINE</strong><button>⌄</button></div>
-          <button className="symbol-row">ƒ <span>timer_isr</span><small>:39</small></button>
-          <button className="symbol-row">ƒ <span>main</span><small>:48</small></button>
+          <div className="file-tree-title"><strong>PROJECT</strong></div>
+          {fileKeys.length > 0 ? (
+            fileKeys.map((filePath) => (
+              <button className={`tree-row file ${selectedFile === filePath ? "active" : ""}`} key={filePath} onClick={() => setSelectedFile(filePath)} title="Modified">
+                <b>C</b><span>{filePath.split('/').pop()}</span><small>●</small>
+              </button>
+            ))
+          ) : (
+            <p className="text-muted">No files yet</p>
+          )}
         </aside>
-        <CodeEditor />
+        {currentFileContent && selectedFile ? (
+          <MonacoEditor value={currentFileContent} filename={selectedFile} readOnly />
+        ) : (
+          <div className="editor-placeholder">
+            <p>Read-only evidence snapshot</p>
+            {task ? <small>Select a file from the tree</small> : <small>No task loaded</small>}
+          </div>
+        )}
         <aside className="agent-panel">
-          <div className="agent-title"><div className="agent-avatar">⌁</div><div><strong>TraceLoop Agent</strong><small><i className="live-dot" /> {runFailed ? 'root cause found' : 'all tests passed'}</small></div><button>•••</button></div>
+          <div className="agent-title"><div className="agent-avatar">⌁</div><div><strong>TraceLoop Agent</strong><small><i className="live-dot" /> {task?.status || 'loading'}</small></div></div>
           <div className="conversation">
-            {messages.map((msg, i) => (
-              <div className={`message ${msg.role}`} key={i}><small>{msg.role === 'user' ? 'You' : 'TraceLoop Agent'}</small><p>{msg.text}</p></div>
-            ))}
             <div className="agent-plan">
               <div className="agent-plan-head"><strong>Execution plan</strong><Badge tone="blue">{steps.length} steps</Badge></div>
-              {steps.map(([label, state, detail], index) => <div className={`agent-step ${state}`} key={label}><span>{state === "done" ? "✓" : "!"}</span><div><strong>{label}</strong><small>{detail}</small></div><code>0:{index + 3}</code></div>)}
+              {steps.length > 0 ? steps.map(([state, reason, timestamp], index) => (
+                <div className={`agent-step done`} key={index}><span>✓</span><div><strong>{state}</strong><small>{reason}</small></div></div>
+              )) : <p className="text-muted">Planning...</p>}
             </div>
-            {runFailed && (
-              <div className="message agent alert"><small>TraceLoop Agent · just now</small><p>The test failed, but the trace is complete. {runData.rootCauseText}</p><button onClick={() => navigate("analysis")}>Open causal evidence →</button></div>
-            )}
           </div>
-          <div className="agent-input"><textarea aria-label="Message agent" placeholder="Ask TraceLoop to investigate…" value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } }} /><div><button onClick={sendMessage}>＋</button><span>Agent may inspect; changes require approval</span><button className="send-button" onClick={sendMessage}>↑</button></div></div>
+          <div className="agent-input">
+            <textarea aria-label="Message agent" placeholder={task?.status === 'clarification-needed' ? 'Provide clarification…' : 'Agent messaging endpoint not available for this task state'} value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey && task?.status === 'clarification-needed') { e.preventDefault(); sendMessage(); } }} disabled={task?.status !== 'clarification-needed'} />
+            <div><button className="send-button" onClick={sendMessage} disabled={task?.status !== 'clarification-needed' || clarifyMutation.isPending}>↑</button></div>
+          </div>
         </aside>
       </div>
     </div>
@@ -520,19 +615,44 @@ function AgentWorkspace({ navigate }: { navigate: (view: View) => void }) {
 }
 
 function RunProgress({ navigate }: { navigate: (view: View) => void }) {
+  const { taskId } = useTask();
   const [openConsole, setOpenConsole] = useState("Test runner");
-  const stages = [
-    ["Firmware generated", "84 lines across 5 files", "done"],
-    ["Compilation", "west build · exit 0", "done"],
-    ["ELF created", "firmware.elf · 71.4 KB", "done"],
-    ["Renode platform loaded", "STM32F4 Discovery", "done"],
-    ["Test scenario started", "3000 µs virtual time", "done"],
-    ["Assertion failed", "Green LED OFF at 2000 µs", "failed"],
-    ["Causal analysis", "6 events · 5 causal edges", "done"],
-  ];
+
+  // Poll task for task-attention bar
+  const { data: task } = trpc.tasks.get.useQuery(
+    { id: taskId! },
+    { enabled: !!taskId, refetchInterval: 2000 }
+  );
+
+  // Load newest run for the task
+  const { data: runs } = trpc.runs.listByTask.useQuery(
+    { taskId: taskId! },
+    { enabled: !!taskId, refetchInterval: 2000 }
+  );
+  const newestRun = runs?.[0];
+
+  // Stop mutation
+  const stopMutation = trpc.tasks.stop.useMutation();
+
+  // Map run status to pipeline stages
+  const stages = newestRun ? [
+    ["Firmware generated", "", "done"],
+    ["Compilation", newestRun.buildOk ? "exit 0" : "build failed", newestRun.buildCompletedAt ? "done" : "pending"],
+    ["Renode platform loaded", "", newestRun.simStartedAt ? "done" : "pending"],
+    ["Test scenario", "", newestRun.simCompletedAt ? "done" : "pending"],
+    ["Analysis", "", newestRun.status === 'passed' || newestRun.status === 'failed' ? "done" : "pending"],
+  ] : [];
   return (
     <div className="page run-page">
-      <div className="page-heading compact-heading"><div><span className="eyebrow">RUN-1042 · Timer LED Controller</span><h1>Build & simulation</h1><p>Renode executed the generated ELF on STM32F4 Discovery.</p></div><div className="heading-actions"><Badge tone="red">Failed</Badge><Button onClick={() => navigate("analysis")}>Open failure analysis →</Button></div></div>
+      {task && (
+        <div className="task-attention-bar">
+          <span>{task.status}</span>
+          <span>· Iteration {task.iteration}</span>
+          <span>· {task.permissionProfile}</span>
+          <button onClick={() => taskId && stopMutation.mutate({ taskId })} disabled={stopMutation.isPending}>Stop</button>
+        </div>
+      )}
+      <div className="page-heading compact-heading"><div><span className="eyebrow">Run · {newestRun?.id.slice(0, 8) || 'Loading'}</span><h1>Build & simulation</h1><p>Renode execution progress.</p></div><div className="heading-actions"><Badge tone={newestRun?.status === 'passed' ? 'green' : newestRun?.status === 'failed' ? 'red' : 'blue'}>{newestRun?.status || 'Running'}</Badge>{newestRun?.status === 'failed' && <Button onClick={() => navigate("analysis")}>Open failure analysis →</Button>}</div></div>
       <div className="run-layout">
         <Panel title="Execution pipeline" eyebrow="Completed in 41.8 seconds" className="pipeline-panel">
           <div className="pipeline-list">{stages.map(([label, detail, state], index) => <div className={`pipeline-row ${state}`} key={label}><span className="pipeline-icon">{state === "done" ? "✓" : "!"}</span><div><strong>{label}</strong><small>{detail}</small></div><code>{index < 2 ? `${9 + index * 13}.${index + 1}s` : index === 5 ? "2.000 ms" : "—"}</code></div>)}</div>
@@ -626,43 +746,73 @@ function CausalGraph({ selected, select }: { selected: EventId; select: (id: Eve
   );
 }
 
-function FailureAnalysis({ navigate }: { navigate: (view: View) => void }) {
+function FailureAnalysis({ navigate, taskId }: { navigate: (view: View) => void; taskId?: string }) {
+  const contextTaskId = useTask().taskId;
+  const effectiveTaskId = taskId ?? contextTaskId;
   const [selected, setSelected] = useState<EventId>("e4");
   const [debugTab, setDebugTab] = useState<"timeline" | "board" | "graph">("timeline");
+  const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
   const event = events[selected];
+
+  // Poll task for task-attention bar
+  const { data: task } = trpc.tasks.get.useQuery(
+    { id: effectiveTaskId! },
+    { enabled: !!effectiveTaskId, refetchInterval: 2000 }
+  );
+  const stopMutation = trpc.tasks.stop.useMutation();
+
+  const { data: patches } = trpc.patches.listByTask.useQuery(
+    { taskId: effectiveTaskId! },
+    { enabled: !!effectiveTaskId }
+  ) as { data: Array<{ status: string }> | undefined };
+  const hasProposedPatch = patches && patches.length > 0 && patches.some(p => p.status === 'proposed');
   return (
     <div className="workspace-page analysis-page">
+      {task && (
+        <div className="task-attention-bar">
+          <span>{task.status}</span>
+          <span>· Iteration {task.iteration}</span>
+          <span>· {task.permissionProfile}</span>
+          <button onClick={() => taskId && stopMutation.mutate({ taskId })} disabled={stopMutation.isPending}>Stop</button>
+        </div>
+      )}
       <div className="run-topbar">
         <div className="run-identity"><Badge tone="red">Failed</Badge><div><strong>{runData.run.id}</strong><small>green_led_should_turn_on</small></div></div>
         <div className="run-meta"><span><small>Board</small>{runData.run.board}</span><span><small>Commit</small><code>{runData.run.commit}</code></span><span><small>Virtual time</small>2.000 ms</span><span><small>Trace events</small>1,284</span></div>
-        <div className="run-actions"><Button onClick={() => navigate("compare")}>⇄ Compare run</Button><Button tone="primary" onClick={() => navigate("run")}>↻ Rerun</Button></div>
+        <div className="run-actions"><Button onClick={() => navigate("compare")}>⇄ Compare run</Button>{hasProposedPatch ? <><Button onClick={() => navigate("run")}>Rerun unchanged</Button><Button tone="primary" onClick={() => navigate("patch")} testId="review-fix">Review proposed fix →</Button></> : <Button tone="primary" onClick={() => navigate("run")}>↻ Rerun</Button>}</div>
       </div>
       <div className="analysis-shell">
         <aside className="trace-sidebar">
           <label className="trace-search"><span>⌕</span><input aria-label="Search trace events" placeholder="Search events" /></label>
           <div className="trace-group open"><button><span>⌄ Test assertions</span><Badge tone="red">1</Badge></button><label className="check-row"><input type="checkbox" defaultChecked /><i className="fail-check">!</i><span>Green LED ON<br /><small>by 2000 µs</small></span></label></div>
-          <div className="trace-group open"><button><span>⌄ Components</span><small>8</small></button>{["Timer 2", "IRQ 28 / NVIC", "CPU core", "GPIO port G", "Green LED", "Orange LED"].map((item, index) => <label className="check-row compact" key={item}><input type="checkbox" defaultChecked /><i className={`component-dot c${index}`} /><span>{item}</span></label>)}</div>
-          <div className="trace-group"><button><span>› Functions</span><small>42</small></button></div>
+          <div className="trace-group open"><button><span>⌄ Implicated components</span><small>6</small></button>{["Timer 2", "IRQ 28 / NVIC", "CPU core", "GPIO port G", "Green LED", "Orange LED"].map((item, index) => <label className="check-row compact" key={item}><input type="checkbox" defaultChecked /><i className={`component-dot c${index}`} /><span>{item}</span></label>)}</div>
+          <div className="trace-group"><button onClick={() => setShowAdvancedFilters(!showAdvancedFilters)}><span>{showAdvancedFilters ? "⌄" : "›"} Advanced filters</span></button></div>
+          {showAdvancedFilters && (<><div className="trace-group"><button><span>› Functions</span><small>42</small></button></div>
           <div className="trace-group"><button><span>› Interrupts</span><small>7</small></button></div>
           <div className="trace-group"><button><span>› Peripherals</span><small>12</small></button></div>
-          <div className="trace-group open"><button><span>⌄ Severity</span></button><div className="severity-row"><Badge tone="red">Failure</Badge><Badge tone="amber">Suspicious</Badge><Badge tone="blue">Info</Badge></div></div>
+          <div className="trace-group open"><button><span>⌄ Severity</span></button><div className="severity-row"><Badge tone="red">Failure</Badge><Badge tone="amber">Suspicious</Badge><Badge tone="blue">Info</Badge></div></div></>)}
           <div className="trace-foot"><span>Showing 78 of 1,284 events</span><button>Reset filters</button></div>
         </aside>
         <main className="debug-workspace">
+          <div className="evidence-panel">
+            <div className="evidence-heading"><div className="evidence-icon">◎</div><div><span className="eyebrow">Grounded in trace evidence</span><h2>{runData.rootCauseText}</h2></div><Badge tone="green">High confidence · 0.99</Badge></div>
+            <p className="explanation">Timer 2 triggered IRQ 28 and entered timer_isr. At main.c:37, the handler wrote GPIO pin 13 instead of the expected pin 12. This changed the orange LED while the green LED remained off at the 2 ms deadline.</p>
+            <div className="evidence-row"><div><strong>Evidence chain</strong><span>{(runData as any).chain?.map((node: any, idx: number) => (<span key={node.id}>{node.label} at {node.time} µs <button onClick={() => setSelected(node.id as EventId)}>[{node.id}]</button>{idx < ((runData as any).chain?.length ?? 0) - 1 && " · "}</span>)) || "Timer 2 expired at 1000 µs [e2] · IRQ 28 pending at 1001 µs [e3] · timer_isr entered at 1002 µs · pin 13 written at 1004 µs [e4] · green LED off at deadline [e6]"}</span></div><div className="evidence-actions"><Button onClick={() => navigate("agent")}>View source</Button><Button onClick={() => navigate("compare")}>Compare passing run</Button><Button tone="primary" onClick={() => navigate("patch")} testId="generate-patch">Generate patch →</Button></div></div>
+          </div>
           <div className="debug-tabs" role="tablist">
             <button className={debugTab === "timeline" ? "active" : ""} onClick={() => setDebugTab("timeline")}><span>⌁</span><div><strong>Timeline</strong><small>WHEN</small></div></button>
             <button className={debugTab === "board" ? "active" : ""} onClick={() => setDebugTab("board")}><span>▰</span><div><strong>Virtual board</strong><small>WHERE</small></div></button>
             <button className={debugTab === "graph" ? "active" : ""} onClick={() => setDebugTab("graph")}><span>⌘</span><div><strong>Causal graph</strong><small>WHY</small></div></button>
           </div>
           <div className="debug-toolbar">
-            <div><button aria-label="Previous event">‹</button><button aria-label="Play trace" className="play">▶</button><button aria-label="Next event">›</button></div>
+            <div><button aria-label="Previous event" disabled>‹</button><button aria-label="Play trace" className="play" disabled>▶</button><button aria-label="Next event" disabled>›</button></div>
             <div className="scrubber"><span>0 µs</span><input aria-label="Trace time" type="range" min="0" max="2000" value={event.time} readOnly /><strong>{event.time} µs</strong><span>2000 µs</span></div>
-            <div><button>−</button><span>100%</span><button>＋</button><button>Fit</button></div>
+            <div><button disabled title="Coming soon">−</button><span>100%</span><button disabled title="Coming soon">＋</button><button disabled title="Coming soon">Fit</button></div>
           </div>
           <div className={`debug-grid active-${debugTab}`}>
-            <Panel eyebrow="WHEN" title="Signal timeline" className="debug-panel timeline-panel" action={<Badge tone="blue">9 lanes</Badge>}><TraceTimeline selected={selected} select={setSelected} /></Panel>
-            <Panel eyebrow="WHERE" title="Virtual board" className="debug-panel board-panel" action={<button className="panel-tool">Isolate component</button>}><BoardDiagram selected={selected} select={setSelected} /></Panel>
-            <Panel eyebrow="WHY" title="Causal graph" className="debug-panel graph-panel" action={<Badge tone="green">Grounded</Badge>}><CausalGraph selected={selected} select={setSelected} /></Panel>
+            {debugTab === "timeline" && <Panel eyebrow="WHEN" title="Signal timeline" className="debug-panel timeline-panel" action={<Badge tone="blue">9 lanes</Badge>}><TraceTimeline selected={selected} select={setSelected} /></Panel>}
+            {debugTab === "board" && <Panel eyebrow="WHERE" title="Virtual board" className="debug-panel board-panel" action={<button className="panel-tool" disabled title="Coming soon">Isolate component</button>}><BoardDiagram selected={selected} select={setSelected} /></Panel>}
+            {debugTab === "graph" && <Panel eyebrow="WHY" title="Causal graph" className="debug-panel graph-panel" action={<Badge tone="green">Grounded</Badge>}><CausalGraph selected={selected} select={setSelected} /></Panel>}
           </div>
           <div className="event-inspector">
             <div className={`event-kind ${event.kind}`}>{event.kind === "observed" ? "OBS" : event.kind === "derived" ? "DRV" : "FAIL"}</div>
@@ -672,7 +822,7 @@ function FailureAnalysis({ navigate }: { navigate: (view: View) => void }) {
             <div className="event-field"><small>Register</small><code>{event.register}</code></div>
             <div className="event-field"><small>Value</small><code>{event.value}</code></div>
             <div className="event-field"><small>Confidence</small><strong>0.99</strong></div>
-            <button className="event-more">Raw Renode evidence ›</button>
+            <button className="event-more" disabled title="Coming soon">Raw Renode evidence ›</button>
           </div>
           <div className="evidence-panel">
             <div className="evidence-heading"><div className="evidence-icon">◎</div><div><span className="eyebrow">Grounded in trace evidence</span><h2>Root cause: <code>timer_isr</code> wrote GPIO pin 13 instead of GPIO pin 12.</h2></div><Badge tone="green">High confidence · 0.99</Badge></div>
@@ -686,38 +836,96 @@ function FailureAnalysis({ navigate }: { navigate: (view: View) => void }) {
 }
 
 function PatchReview({ navigate }: { navigate: (view: View) => void }) {
-  const [showConfirm, setShowConfirm] = useState(false);
-  const [editing, setEditing] = useState(false);
+  const { taskId } = useTask();
+  const [rejectionReason, setRejectionReason] = useState('');
+  const [showRejectInput, setShowRejectInput] = useState(false);
+  const [approvalError, setApprovalError] = useState<string | null>(null);
+
+  // Poll task for task-attention bar
+  const { data: task } = trpc.tasks.get.useQuery(
+    { id: taskId! },
+    { enabled: !!taskId, refetchInterval: 2000 }
+  );
+  const stopMutation = trpc.tasks.stop.useMutation();
+
+  // Load newest patch for task
+  const { data: patches } = trpc.patches.listByTask.useQuery(
+    { taskId: taskId! },
+    { enabled: !!taskId }
+  );
+  const newestPatch = patches?.[0];
+
+  // Approve/reject mutations
+  const approveMutation = trpc.patches.approve.useMutation();
+  const rejectMutation = trpc.patches.reject.useMutation();
+
+  const handleApprove = async () => {
+    if (!newestPatch || !taskId) return;
+    setApprovalError(null);
+    try {
+      // C3: Backend now handles rerun enqueue atomically
+      await approveMutation.mutateAsync({ id: newestPatch.id });
+      navigate('run');
+    } catch (err: any) {
+      setApprovalError(err.message || 'Approval failed');
+    }
+  };
+
+  const handleReject = async () => {
+    if (!newestPatch) return;
+    try {
+      await rejectMutation.mutateAsync({ id: newestPatch.id, reason: rejectionReason });
+      navigate('agent');
+    } catch (err: any) {
+      console.error('Rejection failed:', err);
+    }
+  };
+
+  // Compute patch scope summary from newestPatch
+  const filesChanged = newestPatch?.before && newestPatch?.after ? 1 : 0;
+  const linesChanged = 1; // Simplified
+
   return (
     <div className="page patch-page">
+      {task && (
+        <div className="task-attention-bar">
+          <span>{task.status}</span>
+          <span>· Iteration {task.iteration}</span>
+          <span>· {task.permissionProfile}</span>
+          <button onClick={() => taskId && stopMutation.mutate({ taskId })} disabled={stopMutation.isPending}>Stop</button>
+        </div>
+      )}
       <div className="page-heading compact-heading"><div><span className="eyebrow">Agent awaiting approval</span><h1>Review evidence-backed patch</h1><p>The agent cannot apply or rerun this change without your approval.</p></div><Badge tone="amber">Approval required</Badge></div>
-      <div className="patch-layout">
-        <Panel title="Proposed change" eyebrow={`${patch?.file ?? "src/main.c"} · 1 line changed`} className="diff-panel" action={<Badge tone="green">Low risk</Badge>}>
-          <div className="diff-context"><span>32</span><code>static void timer_isr(const void *arg)</code></div><div className="diff-context"><span>33</span><code>{"{"}</code></div><div className="diff-context"><span>34</span><code>    TIM2-&gt;SR &amp;= ~TIM_SR_UIF;</code></div>
-          <div className="diff-line removed"><span>37</span><b>−</b><code>{`    ${patch ? patch.before : "gpio_pin_set_dt(&orange_led, 1)"};`}</code></div>
-          <div className="diff-line added"><span>37</span><b>＋</b>{editing ? <input aria-label="Edited patch" defaultValue={`    ${patch ? patch.after : "gpio_pin_set_dt(&green_led, 1)"};`} /> : <code>{`    ${patch ? patch.after : "gpio_pin_set_dt(&green_led, 1)"};`}</code>}</div>
-          <div className="diff-context"><span>38</span><code>{"}"}</code></div>
-          <div className="diff-summary"><span><i className="plus">＋1</i><i className="minus">−1</i></span><span>1 file changed</span><span>No configuration changes</span></div>
-        </Panel>
-        <Panel title="Agent reasoning" eyebrow="Causal path referenced" className="reasoning-panel">
-          <p>The trace proves the timer and interrupt path are functioning. The first incorrect state change is the write to GPIO pin 13, which controls the orange LED.</p>
-          <div className="reason-path"><button><small>e2</small><strong>IRQ 28</strong></button><span>→</span><button><small>e3</small><strong>timer_isr</strong></button><span>→</span><button><small>e4</small><strong>GPIO 13</strong></button><span>≠</span><button className="expected"><small>expected</small><strong>GPIO 12</strong></button></div>
-          <div className="reason-list"><div><span>Expected effect</span><strong>Green LED turns on before 2000 µs</strong></div><div><span>Risk level</span><strong className="text-green">Low · local GPIO target only</strong></div><div><span>Files changed</span><code>src/main.c</code></div><div><span>Tests affected</span><strong>green_led_should_turn_on</strong></div><div><span>Evidence</span><strong><button>[e2]</button> <button>[e3]</button> <button>[e4]</button> <button>[e6]</button></strong></div></div>
-          <div className="agent-assurance"><span>◎</span><p><strong>Evidence-backed proposal</strong><br />This correction follows the observed causal path. It is not inferred from naming alone.</p></div>
-        </Panel>
-      </div>
-      <div className="approval-bar"><div><span className="agent-avatar">⌁</span><p><strong>Ready to apply and rerun</strong><br /><small>TraceLoop will rebuild the ELF and execute the same test scenario in Renode.</small></p></div><div><Button tone="danger" onClick={() => navigate("analysis")}>Reject</Button><Button onClick={() => setEditing((value) => !value)}>{editing ? "Save edit" : "Edit patch"}</Button><Button tone="primary" onClick={() => setShowConfirm(true)} testId="approve-patch">Approve and rerun →</Button></div></div>
-      {showConfirm && <div className="modal-backdrop"><div className="confirm-modal" role="dialog" aria-modal="true" aria-label="Confirm agent change"><div className="modal-icon">↻</div><h2>Apply patch and rerun?</h2><p>TraceLoop will modify <code>src/main.c</code>, rebuild the firmware, and rerun all 4 tests on STM32F4 Discovery.</p><div className="modal-summary"><span>1 line changed</span><span>Same test inputs</span><span>~42 seconds</span></div><label><input type="checkbox" defaultChecked /> Preserve RUN-1042 for comparison</label><div className="modal-actions"><Button onClick={() => setShowConfirm(false)}>Cancel</Button><Button tone="primary" onClick={() => navigate("success")} testId="confirm-rerun">Apply patch & rerun</Button></div></div></div>}
+      {approvalError && <div className="error-banner">{approvalError}</div>}
+      {newestPatch ? (
+        <div className="patch-layout">
+          <Panel title="Proposed change" eyebrow={`${filesChanged} file · ${linesChanged} line · tests unchanged`} className="diff-panel">
+            <div className="diff-line removed"><span>-</span><code>{newestPatch.before}</code></div>
+            <div className="diff-line added"><span>+</span><code>{newestPatch.after}</code></div>
+            <div className="diff-summary"><span>Scope: {filesChanged} file · {linesChanged} line · tests unchanged</span></div>
+          </Panel>
+          <Panel title="Agent reasoning" eyebrow="Causal path referenced" className="reasoning-panel">
+            <p>Patch proposed based on execution evidence.</p>
+          </Panel>
+        </div>
+      ) : (
+        <p>Loading patch...</p>
+      )}
+      {showRejectInput ? (
+        <div className="reject-input">
+          <label><span>Request changes</span><textarea value={rejectionReason} onChange={(e) => setRejectionReason(e.target.value)} placeholder="Describe why you're rejecting..." /></label>
+          <div><Button onClick={() => setShowRejectInput(false)}>Cancel</Button><Button tone="danger" onClick={handleReject} disabled={rejectMutation.isPending}>Submit rejection</Button></div>
+        </div>
+      ) : (
+        <div className="approval-bar"><div><span className="agent-avatar">⌁</span><p><strong>Ready to apply and rerun</strong></p></div><div><Button tone="danger" onClick={() => setShowRejectInput(true)}>Request changes</Button><Button tone="primary" onClick={handleApprove} disabled={approveMutation.isPending} testId="approve-patch">Approve & rerun →</Button></div></div>
+      )}
     </div>
   );
 }
 
 function Success({ navigate }: { navigate: (view: View) => void }) {
-  const [toast, setToast] = useState("");
-  const notify = (message: string) => { setToast(message); window.setTimeout(() => setToast(""), 2200); };
   return (
     <div className="page success-page">
-      {toast && <div className="toast"><span>✓</span>{toast}</div>}
       <div className="success-hero"><div className="success-check"><span>✓</span><i /><i /><i /></div><div><span className="eyebrow">RUN-1043 · Rerun complete</span><h1>All 4 tests passed.</h1><p>The green LED turned on at 1004 µs—996 µs before the deadline.</p></div><Badge tone="green">Passed</Badge></div>
       <div className="success-grid">
         <Panel title="Successful execution path" eyebrow="Evidence captured" className="success-path-panel">
@@ -731,7 +939,7 @@ function Success({ navigate }: { navigate: (view: View) => void }) {
       <Panel title="Bad run vs. good run" action={<Button onClick={() => navigate("compare")}>Open detailed comparison →</Button>} className="mini-compare-panel">
         <div className="mini-compare"><div className="bad"><Badge tone="red">RUN-1042 · Failed</Badge><code>GPIOG_ODR[13]  0 → 1</code><span>Orange LED ON</span></div><div className="divergence-arrow"><small>first divergence</small><b>→</b></div><div className="good"><Badge tone="green">RUN-1043 · Passed</Badge><code>GPIOG_ODR[12]  0 → 1</code><span>Green LED ON</span></div></div>
       </Panel>
-      <div className="success-actions"><Button onClick={() => navigate("compare")}>⇄ View run comparison</Button><Button onClick={() => notify("Evidence report saved")}>⇩ Save report</Button><Button tone="primary" onClick={() => notify("Patch committed to agent/timer2-led")}>⑂ Commit patch</Button><Button tone="ghost" onClick={() => navigate("agent")}>Continue development →</Button></div>
+      <div className="success-actions"><Button onClick={() => navigate("compare")}>⇄ View run comparison</Button><Button disabled title="Source control not connected">⇩ Export evidence</Button><Button tone="primary" disabled title="Source control not connected">ⵂ Commit patch</Button><Button tone="ghost" onClick={() => navigate("agent")}>Continue development →</Button></div>
     </div>
   );
 }
@@ -752,77 +960,106 @@ function RunComparison({ navigate }: { navigate: (view: View) => void }) {
   );
 }
 
-const runRows = [
-  ["RUN-1043", "Today, 11:42", "41e9c6b", "STM32F4 Discovery", "2", "4 / 4", "—", "41.2s", "Passed"],
-  ["RUN-1042", "Today, 11:36", "8c47a1d", "STM32F4 Discovery", "1", "3 / 4", "Wrong GPIO pin", "41.8s", "Failed"],
-  ["RUN-1041", "Today, 11:18", "39c201f", "STM32F4 Discovery", "1", "4 / 4", "—", "39.6s", "Passed"],
-  ["RUN-1040", "Today, 10:57", "d914af0", "Custom Renode", "8", "8 / 14", "—", "2m 14s", "Running"],
-  ["RUN-1039", "Today, 10:42", "a03f11e", "nRF52840 DK", "3", "12 / 12", "—", "58.3s", "Passed"],
-  ["RUN-1038", "Yesterday", "9f82cd1", "STM32F4 Discovery", "1", "2 / 4", "Timer not enabled", "33.1s", "Failed"],
-];
-
 function RunHistory({ navigate }: { navigate: (view: View) => void }) {
-  const [status, setStatus] = useState("All statuses");
-  const filtered = status === "All statuses" ? runRows : runRows.filter((row) => row[8] === status);
+  const { taskId } = useTask();
+  const [status, setStatus] = useState("all");
+
+  // Load runs for current task
+  const { data: runs } = trpc.runs.listByTask.useQuery(
+    { taskId: taskId! },
+    { enabled: !!taskId }
+  );
+
+  // Stop mutation for running rows
+  const stopMutation = trpc.tasks.stop.useMutation();
+
+  const filtered = status === "all" ? (runs || []) : (runs || []).filter((r) => r.status === status);
+
   return (
     <div className="page history-page">
       <div className="page-heading"><div><span className="eyebrow">Trace archive</span><h1>Simulation runs</h1><p>Browse, filter, compare, and reopen every evidence trace.</p></div><Button tone="primary" onClick={() => navigate("create")}>＋ New run</Button></div>
-      <div className="filterbar"><label className="search-field"><span>⌕</span><input aria-label="Search runs" placeholder="Search run, branch, test, or root cause…" /></label><select aria-label="Status filter" value={status} onChange={(e) => setStatus(e.target.value)}><option>All statuses</option><option>Failed</option><option>Passed</option><option>Running</option></select><select aria-label="Board filter"><option>All boards</option><option>STM32F4 Discovery</option><option>nRF52840 DK</option></select><select aria-label="Branch filter"><option>All branches</option><option>agent/timer2-led</option><option>main</option></select><button>More filters</button></div>
-      <Panel className="table-panel"><div className="data-table"><div className="table-row table-head"><span>Run ID</span><span>Timestamp</span><span>Revision</span><span>Board</span><span>Iteration</span><span>Tests</span><span>Root cause</span><span>Duration</span><span>Status</span></div>{filtered.map((row) => <button className="table-row" key={row[0]} onClick={() => navigate(row[8] === "Failed" ? "analysis" : row[8] === "Running" ? "run" : "success")}><code>{row[0]}</code><span>{row[1]}</span><code>{row[2]}</code><span>{row[3]}</span><span>Agent {row[4]}</span><strong>{row[5]}</strong><span>{row[6]}</span><code>{row[7]}</code><span><Badge tone={row[8] === "Failed" ? "red" : row[8] === "Passed" ? "green" : "blue"}>{row[8]}</Badge></span></button>)}</div><footer className="table-footer"><span>Showing {filtered.length} of 84 runs</span><div><button disabled>‹</button><button className="active">1</button><button>2</button><button>3</button><button>›</button></div></footer></Panel>
+      <div className="filterbar"><label className="search-field"><span>⌕</span><input aria-label="Search runs" placeholder="Search run, branch, test, or root cause…" /></label><select aria-label="Status filter" value={status} onChange={(e) => setStatus(e.target.value)}><option value="all">All statuses</option><option value="failed">Failed</option><option value="passed">Passed</option><option value="pending">Running</option></select><button disabled title="Coming soon">More filters</button></div>
+      <Panel className="table-panel"><div className="data-table"><div className="table-row table-head"><span>Run ID</span><span>Timestamp</span><span>Iteration</span><span>Status</span><span>Actions</span></div>{filtered.map((run) => <button className="table-row" key={run.id} onClick={() => navigate(run.status === "failed" ? "analysis" : run.status === "pending" ? "run" : "success")}><code>{run.id.slice(0, 8)}</code><span>{new Date(run.createdAt).toLocaleString()}</span><span>Iteration {run.iteration}</span><span><Badge tone={run.status === "failed" ? "red" : run.status === "passed" ? "green" : "blue"}>{run.status}</Badge></span>{(run.status === "pending" || run.status === "building" || run.status === "simulating" || run.status === "analyzing") && <button onClick={(e) => { e.stopPropagation(); taskId && stopMutation.mutate({ taskId }); }}>Stop</button>}</button>)}</div><footer className="table-footer"><span>Showing {filtered.length} of {runs?.length || 0} runs</span></footer></Panel>
     </div>
   );
 }
 
 function Platforms({ navigate }: { navigate: (view: View) => void }) {
-  const [selected, setSelected] = useState("STM32F4 Discovery");
-  const platforms = [
-    { name: "STM32F4 Discovery", mcu: "STM32F407VG", arch: "ARM Cortex-M4F", memory: "1 MB Flash · 192 KB SRAM", pins: "16 GPIO · 4 LEDs", status: "Verified" },
-    { name: "nRF52840 DK", mcu: "nRF52840", arch: "ARM Cortex-M4F", memory: "1 MB Flash · 256 KB RAM", pins: "48 GPIO · 4 LEDs", status: "Verified" },
-    { name: "ESP32-C3 DevKit", mcu: "ESP32-C3", arch: "RISC-V RV32IMC", memory: "4 MB Flash · 400 KB SRAM", pins: "22 GPIO · 1 LED", status: "Beta" },
-  ];
-  const active = platforms.find((item) => item.name === selected) ?? platforms[0];
+  const [selected, setSelected] = useState<string | null>(null);
+  const { data: boards, isLoading, error } = trpc.boards.list.useQuery() as {
+    data: Array<{ id: string; name: string; mcu: string; architecture: string; memoryFlash: number; memoryRam: number; peripherals: string[]; status: string }> | undefined;
+    isLoading: boolean;
+    error: any;
+  };
+
+  const platforms = boards || [];
+
+  const active = platforms.find((item: any) => item.id === selected) ?? platforms[0];
+  const formatMemory = (flash: number, ram: number) => `${(flash / 1024).toFixed(0)} MB Flash · ${(ram / 1024).toFixed(0)} ${ram >= 1024 ? 'MB' : 'KB'} ${ram >= 1024 ? 'RAM' : 'SRAM'}`;
+  const formatPins = (peripherals: string[]) => `${peripherals.includes('GPIO') ? '16' : '0'} GPIO · ${peripherals.includes('GPIO') ? '4' : '0'} LEDs`;
+  
   return (
     <div className="page platforms-page">
-      <div className="page-heading"><div><span className="eyebrow">Renode compatible</span><h1>Platform library</h1><p>Virtual hardware profiles available to the TraceLoop agent.</p></div><Button onClick={() => navigate("create")}>⇧ Import custom Renode platform</Button></div>
-      <div className="platform-layout">
-        <div className="platform-list"><label className="search-field"><span>⌕</span><input aria-label="Search platform library" placeholder="Search board or MCU…" /></label>{platforms.map((item) => <button className={`platform-card ${selected === item.name ? "selected" : ""}`} key={item.name} onClick={() => setSelected(item.name)}><div className="platform-thumb"><span>MCU</span><i /><i /><i /></div><div><div className="platform-name"><strong>{item.name}</strong><Badge tone={item.status === "Verified" ? "green" : "amber"}>{item.status}</Badge></div><span>{item.mcu} · {item.arch}</span><small>{item.memory}</small><small>{item.pins}</small></div></button>)}</div>
+      <div className="page-heading"><div><span className="eyebrow">Renode compatible</span><h1>Platform library</h1><p>Virtual hardware profiles available to the TraceLoop agent.</p></div><Button onClick={() => navigate("create")} disabled>⇧ Import custom Renode platform</Button></div>
+      {isLoading && <div className="panel"><p>Loading boards...</p></div>}
+      {error && <div className="panel"><p className="text-red">Error loading boards: {String(error)}</p></div>}
+      {!isLoading && !error && (<div className="platform-layout">
+        <div className="platform-list"><label className="search-field"><span>⌕</span><input aria-label="Search platform library" placeholder="Search board or MCU…" /></label>{platforms.map((item: any) => <button className={`platform-card ${selected === item.id ? "selected" : ""}`} key={item.id} onClick={() => setSelected(item.id)}><div className="platform-thumb"><span>MCU</span><i /><i /><i /></div><div><div className="platform-name"><strong>{item.name}</strong><Badge tone={item.status === "active" ? "green" : item.status === "beta" ? "amber" : "neutral"}>{item.status === "active" ? "Available" : item.status === "beta" ? "Beta" : "Deprecated"}</Badge></div><span>{item.mcu} · {item.architecture}</span><small>{formatMemory(item.memoryFlash, item.memoryRam)}</small><small>{formatPins(item.peripherals)}</small></div></button>)}</div>
         <Panel title={active.name} eyebrow="Platform details" className="platform-detail" action={<Button tone="primary" onClick={() => navigate("create")}>Use this board</Button>}>
-          <div className="platform-hero-board"><div className="platform-chip"><small>{active.arch}</small><strong>{active.mcu}</strong><span>Renode ready</span></div><span className="diagram-block a">TIM2</span><span className="diagram-block b">NVIC</span><span className="diagram-block c">GPIO</span><span className="diagram-block d">UART</span><i className="platform-pins p1" /><i className="platform-pins p2" /></div>
-          <div className="spec-grid"><div><span>Architecture</span><strong>{active.arch}</strong></div><div><span>Memory</span><strong>{active.memory}</strong></div><div><span>GPIO & LEDs</span><strong>{active.pins}</strong></div><div><span>Compatibility</span><strong className="text-green">Trace + causal analysis</strong></div></div>
-          <div className="detail-columns"><div><h3>Supported peripherals</h3><div className="cap-list large">{["GPIO", "UART 2/3", "TIM 1–14", "SPI 1–3", "I²C 1–3", "ADC", "DMA", "NVIC"].map((cap) => <span key={cap}>{cap}</span>)}</div><h3>Available outputs</h3><div className="led-list"><span><i className="led-dot green" /> LD4 Green · PG12</span><span><i className="led-dot orange" /> LD3 Orange · PG13</span><span><i className="led-dot red" /> LD5 Red · PG14</span><span><i className="led-dot blue" /> LD6 Blue · PG15</span></div></div><div><h3>Platform files</h3><button className="file-pill"><span>R</span><div><strong>stm32f4_discovery.repl</strong><small>Board platform definition</small></div><code>12.4 KB</code></button><button className="file-pill"><span>R</span><div><strong>stm32f4_discovery.resc</strong><small>Initialization script</small></div><code>3.1 KB</code></button><h3>Example firmware</h3><button className="sample-row"><span>▤</span><div><strong>Timer-driven LED</strong><small>Zephyr · C · 4 tests</small></div><b>›</b></button></div></div>
+          <div className="platform-hero-board"><div className="platform-chip"><small>{active.architecture}</small><strong>{active.mcu}</strong><span>Renode ready</span></div><span className="diagram-block a">TIM2</span><span className="diagram-block b">NVIC</span><span className="diagram-block c">GPIO</span><span className="diagram-block d">UART</span><i className="platform-pins p1" /><i className="platform-pins p2" /></div>
+          <div className="spec-grid"><div><span>Architecture</span><strong>{active.architecture}</strong></div><div><span>Memory</span><strong>{formatMemory(active.memoryFlash, active.memoryRam)}</strong></div><div><span>GPIO & LEDs</span><strong>{formatPins(active.peripherals)}</strong></div><div><span>Compatibility</span><strong className="text-green">Trace + causal analysis</strong></div></div>
+          <div className="detail-columns"><div><h3>Supported peripherals</h3><div className="cap-list large">{active?.peripherals?.map((cap: string) => <span key={cap}>{cap}</span>)}</div><h3>Available outputs</h3><div className="led-list"><span><i className="led-dot green" /> LD4 Green · PG12</span><span><i className="led-dot orange" /> LD3 Orange · PG13</span><span><i className="led-dot red" /> LD5 Red · PG14</span><span><i className="led-dot blue" /> LD6 Blue · PG15</span></div></div><div><h3>Platform files</h3><button className="file-pill"><span>R</span><div><strong>stm32f4_discovery.repl</strong><small>Board platform definition</small></div><code>12.4 KB</code></button><button className="file-pill"><span>R</span><div><strong>stm32f4_discovery.resc</strong><small>Initialization script</small></div><code>3.1 KB</code></button><h3>Example firmware</h3><button className="sample-row"><span>▤</span><div><strong>Timer-driven LED</strong><small>Zephyr · C · 4 tests</small></div><b>›</b></button></div></div>
         </Panel>
-      </div>
+      </div>)}
     </div>
   );
 }
 
-function TestsAndReports({ view, navigate }: { view: "tests" | "reports"; navigate: (view: View) => void }) {
-  const tests = [["green_led_should_turn_on", "Timer LED Controller", "Failed", "GPIO pin 12 = 1 by 2000 µs"], ["timer2_irq_fires", "Timer LED Controller", "Passed", "IRQ 28 pending by 1100 µs"], ["uart_frame_forwarded", "UART Sensor Gateway", "Passed", "Frame echoed within 8 ms"], ["overcurrent_latches_pwm", "Motor Safety Controller", "Running", "PWM disabled when current > 4.2 A"]];
-  return <div className="page simple-page"><div className="page-heading"><div><span className="eyebrow">{view === "tests" ? "Scenario library" : "Shareable evidence"}</span><h1>{view === "tests" ? "Test scenarios" : "Evidence reports"}</h1><p>{view === "tests" ? "Reusable hardware inputs and assertions for Renode runs." : "Causal findings, run comparisons, and sign-off artifacts."}</p></div><Button tone="primary" onClick={() => navigate("create")}>＋ {view === "tests" ? "New scenario" : "Generate report"}</Button></div><div className="simple-grid">{(view === "tests" ? tests : tests.slice(0, 3).map((item, index) => [`Trace report · ${item[0]}`, `RUN-${1042 - index}`, index === 0 ? "Draft" : "Ready", index === 0 ? "6 cited events · root cause" : "Passing run · evidence bundle"])).map((item) => <button className="simple-card" key={item[0]} onClick={() => navigate(item[2] === "Failed" || item[2] === "Draft" ? "analysis" : "success")}><div><Badge tone={item[2] === "Failed" ? "red" : item[2] === "Running" || item[2] === "Draft" ? "amber" : "green"}>{item[2]}</Badge><span className="card-menu">•••</span></div><strong>{item[0]}</strong><span>{item[1]}</span><p>{item[3]}</p><small>Updated today · Open →</small></button>)}</div></div>;
+function TestsAndReports({ view, navigate, taskId }: { view: "tests" | "reports"; navigate: (view: View) => void; taskId?: string }) {
+  const { data: task } = trpc.tasks.get.useQuery(
+    { id: taskId! },
+    { enabled: !!taskId }
+  ) as { data: { acceptanceCriteria: Array<{ name: string; register: string; expect: string; byTime: number }> } | undefined };
+
+  if (view === "tests") {
+    return <div className="page simple-page"><div className="page-heading"><div><span className="eyebrow">Project criteria</span><h1>Acceptance criteria</h1><p>{task ? "Agent-generated and user-approved success conditions for this project." : "Acceptance criteria are defined when you create a project."}</p></div>{task && <Button tone="primary" onClick={() => navigate("create")}>＋ Add criterion</Button>}</div>{task ? (<div className="simple-grid">{task.acceptanceCriteria.map((criterion: any) => <div className="simple-card" key={criterion.name}><div><Badge tone="neutral">Criterion</Badge></div><strong>{criterion.name}</strong><p>{criterion.register} = {criterion.expect} by {criterion.byTime} µs</p></div>)}</div>) : (<Panel><p>No active project. Create a project to define acceptance criteria.</p></Panel>)}</div>;
+  }
+
+  return <div className="page simple-page"><div className="page-heading"><div><span className="eyebrow">Run artifacts</span><h1>Export evidence</h1><p>Export evidence is available on each run's detail page.</p></div></div><Panel><p>Navigate to a specific run to export its evidence bundle (trace, root cause, diff, and sign-off artifacts).</p></Panel></div>;
 }
 
 function Settings() {
   const [permission, setPermission] = useState("Review every patch");
+  const [activeTab, setActiveTab] = useState("Runtime & toolchains");
+  const [health, setHealth] = useState<HealthStatus | null>(null);
+  const settingsTabs = ["Runtime & toolchains", "Source control", "Agent & models", "Permissions", "Data retention", "Notifications"];
+
+  useEffect(() => {
+    fetch('/api/health')
+      .then(res => res.json())
+      .then((data: HealthStatus) => setHealth(data))
+      .catch(() => setHealth(null));
+  }, []);
+
+  const isHealthy = health?.status === 'ok';
+
   return (
     <div className="page settings-page">
-      <div className="page-heading"><div><span className="eyebrow">Workspace configuration</span><h1>Settings & integrations</h1><p>Control tools, model access, permissions, and trace retention.</p></div><Badge tone="green">All core systems ready</Badge></div>
-      <div className="settings-layout"><aside className="settings-nav">{["Runtime & toolchains", "Source control", "Agent & models", "Permissions", "Data retention", "Notifications"].map((item, index) => <button className={index === 0 ? "active" : ""} key={item}>{item}<span>›</span></button>)}</aside><main className="settings-main"><Panel title="Runtime & toolchains" eyebrow="Local execution"><div className="integration-list">{[["Renode", "1.15.3", "Connected", "Virtual hardware simulation"], ["Zephyr SDK", "0.17.2", "Ready", "ARM and RISC-V toolchains"], ["CMake + Ninja", "3.29 · 1.12", "Ready", "Firmware build system"], ["MCP server", "traceloop-renode", "Connected", "Agent tool bridge"]].map(([name, version, status, desc]) => <div className="integration-row" key={name}><span className="integration-icon">{name.slice(0, 2).toUpperCase()}</span><div><strong>{name}</strong><small>{desc}</small></div><code>{version}</code><Badge tone="green">● {status}</Badge><button>Configure</button></div>)}</div></Panel><Panel title="Connections"><div className="integration-list"><div className="integration-row"><span className="integration-icon git">⑂</span><div><strong>GitHub</strong><small>traceloop-labs · 12 repositories</small></div><Badge tone="green">Connected</Badge><button>Manage</button></div><div className="integration-row"><span className="integration-icon">ZE</span><div><strong>Zephyr SDK</strong><small>Author, build & simulate firmware for the agent</small></div><Badge tone="green">Connected</Badge><button>Manage</button></div></div></Panel><Panel title="Agent configuration"><div className="settings-form"><label><span>AI model</span><select><option>GPT-5.2 · firmware agent</option></select></label><label><span>Source-change permission</span><select value={permission} onChange={(e) => setPermission(e.target.value)}><option>Review every patch</option><option>Allow low-risk changes</option></select></label><label><span>Trace retention</span><select><option>90 days</option><option>30 days</option><option>1 year</option></select></label></div><div className="permission-callout"><span>◎</span><div><strong>Human approval stays in the loop</strong><p>Destructive commands, firmware source changes, commits, and external side effects require explicit approval.</p></div></div></Panel></main></div>
+      <div className="page-heading"><div><span className="eyebrow">Workspace configuration</span><h1>Settings & integrations</h1><p>Control tools, model access, permissions, and trace retention.</p></div>{isHealthy && <Badge tone="green">All core systems ready</Badge>}</div>
+      <div className="settings-layout"><aside className="settings-nav">{settingsTabs.map((item) => <button className={activeTab === item ? "active" : ""} key={item} onClick={() => setActiveTab(item)}>{item}<span>›</span></button>)}</aside><main className="settings-main">
+        {activeTab === "Runtime & toolchains" && <Panel title="Runtime & toolchains" eyebrow="Local execution"><div className="integration-list">{[["Renode", "1.15.3", "Connected", "Virtual hardware simulation"], ["Zephyr SDK", "0.17.2", "Ready", "ARM and RISC-V toolchains"], ["CMake + Ninja", "3.29 · 1.12", "Ready", "Firmware build system"], ["MCP server", "traceloop-renode", "Connected", "Agent tool bridge"]].map(([name, version, status, desc]) => <div className="integration-row" key={name}><span className="integration-icon">{name.slice(0, 2).toUpperCase()}</span><div><strong>{name}</strong><small>{desc}</small></div><code>{version}</code><Badge tone="green">● {status}</Badge><button disabled title="Coming soon">Configure</button></div>)}</div></Panel>}
+        {activeTab === "Source control" && <Panel title="Connections"><div className="integration-list"><div className="integration-row"><span className="integration-icon git">⑂</span><div><strong>GitHub</strong><small>traceloop-labs · 12 repositories</small></div><Badge tone="green">Connected</Badge><button disabled title="Coming soon">Manage</button></div><div className="integration-row"><span className="integration-icon">ZE</span><div><strong>Zephyr SDK</strong><small>Author, build & simulate firmware for the agent</small></div><Badge tone="green">Connected</Badge><button disabled title="Coming soon">Manage</button></div></div></Panel>}
+        {activeTab === "Agent & models" && <Panel title="Agent configuration"><div className="settings-form"><label><span>AI model</span><select><option>GPT-4.1 · firmware agent</option></select></label><label><span>Endpoint URL</span><input defaultValue="https://api.openai.com/v1" readOnly /></label><label><span>Source-change permission</span><select value={permission} onChange={(e) => setPermission(e.target.value)}><option>Review every patch — Human approval required for all source changes</option><option>Allow low-risk changes — Agent may apply simple fixes autonomously</option><option>Autonomous mode — Agent may commit all patches meeting safety criteria</option></select></label><label><span>Trace retention</span><select><option>90 days</option><option>30 days</option><option>1 year</option></select></label></div><div className="permission-callout"><span>◎</span><div><strong>Human approval stays in the loop</strong><p>Destructive commands, firmware source changes, commits, and external side effects require explicit approval.</p></div></div></Panel>}
+        {activeTab === "Permissions" && <Panel title="Permissions"><div className="settings-form"><label><span>Source-change permission</span><select value={permission} onChange={(e) => setPermission(e.target.value)}><option>Review every patch</option><option>Allow low-risk changes</option></select></label></div><div className="permission-callout"><span>◎</span><div><strong>Human approval stays in the loop</strong><p>Destructive commands, firmware source changes, commits, and external side effects require explicit approval.</p></div></div></Panel>}
+        {activeTab === "Data retention" && <Panel title="Data retention"><div className="settings-form"><label><span>Trace retention</span><select><option>90 days</option><option>30 days</option><option>1 year</option></select></label></div></Panel>}
+        {activeTab === "Notifications" && <Panel title="Notifications"><div className="settings-form"><label><span>Email notifications</span><select><option>On failure only</option><option>All events</option><option>Off</option></select></label></div></Panel>}
+      </main></div>
     </div>
   );
 }
 
-function FSMView({ navigate }: { navigate: (view: View) => void }) {
-  const [taskId, setTaskId] = useState<string>("");
-  const [showInput, setShowInput] = useState(true);
-
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (taskId.trim()) {
-      setShowInput(false);
-    }
-  };
-
-  if (showInput) {
+function FSMView({ navigate, taskId }: { navigate: (view: View) => void; taskId?: string }) {
+  if (!taskId) {
     return (
       <div className="page">
         <div className="page-heading">
@@ -832,34 +1069,9 @@ function FSMView({ navigate }: { navigate: (view: View) => void }) {
             <p>Monitor and control the agent's state machine in real-time.</p>
           </div>
         </div>
-        <div className="bg-gray-900 rounded-lg p-8 border border-gray-800 max-w-2xl">
-          <h2 className="text-xl font-semibold text-white mb-4">Enter Task ID</h2>
-          <p className="text-gray-400 text-sm mb-6">
-            Enter the ID of a task to visualize its state machine progression.
-          </p>
-          <form onSubmit={handleSubmit} className="space-y-4">
-            <div>
-              <label htmlFor="taskId" className="block text-sm font-medium text-gray-300 mb-2">
-                Task ID
-              </label>
-              <input
-                id="taskId"
-                type="text"
-                value={taskId}
-                onChange={(e) => setTaskId(e.target.value)}
-                placeholder="e.g., 123e4567-e89b-12d3-a456-426614174000"
-                className="w-full px-4 py-3 bg-gray-800 border border-gray-700 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                required
-              />
-            </div>
-            <button
-              type="submit"
-              className="w-full px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg transition-colors"
-            >
-              Load Task State Machine
-            </button>
-          </form>
-        </div>
+        <Panel>
+          <p>No active task. Create a project to monitor the agent's state machine.</p>
+        </Panel>
       </div>
     );
   }
@@ -870,14 +1082,8 @@ function FSMView({ navigate }: { navigate: (view: View) => void }) {
         <div>
           <span className="eyebrow">Agent State Machine</span>
           <h1>FSM Visualization</h1>
-          <p>Task: {taskId}</p>
+          <p>Monitoring task {taskId}</p>
         </div>
-        <button
-          onClick={() => setShowInput(true)}
-          className="button button-secondary"
-        >
-          Change Task
-        </button>
       </div>
       <FSMIntegration taskId={taskId} />
     </div>
@@ -885,9 +1091,38 @@ function FSMView({ navigate }: { navigate: (view: View) => void }) {
 }
 
 export default function Home() {
-  const [view, setView] = useState<View>("analysis");
+  const [view, setView] = useState<View>("dashboard");
   const [navOpen, setNavOpen] = useState(false);
   const [notifications, setNotifications] = useState(false);
+  const [wizardConfig, setWizardConfig] = useState<WizardConfig | null>(null);
+  const [taskId, setTaskId] = useState<string | null>(null);
+  const [health, setHealth] = useState<HealthStatus | null>(null);
+  const [healthLoading, setHealthLoading] = useState(true);
+
+  useEffect(() => {
+    fetch('/api/health')
+      .then(res => res.json())
+      .then((data: HealthStatus) => {
+        setHealth(data);
+        setHealthLoading(false);
+      })
+      .catch(() => {
+        setHealth(null);
+        setHealthLoading(false);
+      });
+  }, []);
+
+  // D1: Load taskId from URL on mount
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    const taskParam = url.searchParams.get('task');
+    if (taskParam) {
+      setTaskId(taskParam);
+    }
+  }, []);
+
+  const systemStatus = healthLoading ? "Checking systems..." : health?.status === 'ok' ? "Simulator ready" : "Compute unavailable";
+  const healthTooltip = health ? `Supabase ${health.checks.supabase} · Inngest ${health.checks.inngest} · ${new Date(health.timestamp).toLocaleTimeString()}` : "Health check pending";
   const activeNav = useMemo(() => {
     if (["analysis", "run", "success", "compare", "history", "patch"].includes(view)) return "history";
     if (view === "create") return "dashboard";
@@ -897,36 +1132,38 @@ export default function Home() {
   const navigate = (next: View) => { setView(next); setNavOpen(false); window.scrollTo({ top: 0, behavior: "smooth" }); };
 
   return (
+    <TaskContext.Provider value={{ taskId, setTaskId }}>
     <div className="app-shell">
       <aside className={`sidebar ${navOpen ? "open" : ""}`}>
         <div className="sidebar-brand"><Logo /><button className="mobile-close" onClick={() => setNavOpen(false)}>×</button></div>
-        <nav>{navItems.slice(0, 6).map((item) => <button key={item.label} className={activeNav === item.view ? "active" : ""} onClick={() => navigate(item.view)} data-testid={`nav-${item.view}`}><span>{item.icon}</span><strong>{item.label}</strong>{item.label === "Runs" && <small>3</small>}</button>)}</nav>
-        <div className="sidebar-bottom"><nav>{navItems.slice(6).map((item) => <button key={item.label} className={activeNav === item.view ? "active" : ""} onClick={() => navigate(item.view)}><span>{item.icon}</span><strong>{item.label}</strong></button>)}</nav><div className="renode-status"><i /><div><strong>Renode connected</strong><small>v1.15.3 · local</small></div></div></div>
+        <nav>{navItems.map((item) => 'divider' in item ? <div key={item.label} className="nav-divider"><span>{item.label}</span></div> : <button key={item.label} className={activeNav === item.view ? "active" : ""} onClick={() => navigate(item.view)} data-testid={`nav-${item.view}`}><span>{item.icon}</span><strong>{item.label}</strong>{item.label === "Runs" && <small>3</small>}</button>)}</nav>
+        <div className="sidebar-bottom"><div className="renode-status" title={healthTooltip}><i /><div><strong>{systemStatus}</strong><small>Renode</small></div></div></div>
       </aside>
       {navOpen && <button className="nav-backdrop" aria-label="Close navigation" onClick={() => setNavOpen(false)} />}
       <div className="app-main">
         <header className="global-topbar">
-          <div className="topbar-left"><button className="menu-button" aria-label="Open navigation" onClick={() => setNavOpen(true)}>☰</button><div className="breadcrumb"><span>{screenTitles[view]}</span><b>Timer LED Controller</b></div></div>
-          <div className="project-context"><button><small>Project</small><strong>Timer LED Controller⌄</strong></button><span /><button><small>Board</small><strong>STM32F4 Discovery⌄</strong></button><span /><button><small>Branch</small><strong>⑂ agent/timer2-led⌄</strong></button></div>
-          <div className="topbar-actions"><button className="connection-pill"><i /> Renode</button><button className="notification-button" onClick={() => setNotifications((value) => !value)} aria-label="Notifications">♢<i /></button><button className="avatar-button">AK</button></div>
-          {notifications && <div className="notification-popover"><header><strong>Notifications</strong><button onClick={() => setNotifications(false)}>×</button></header><div><span className="notify-icon fail">!</span><p><strong>RUN-1042 needs attention</strong><small>Root cause found · 6m ago</small></p></div><div><span className="notify-icon pass">✓</span><p><strong>UART gateway patch passed</strong><small>12 tests passed · 42m ago</small></p></div></div>}
+          <div className="topbar-left"><button className="menu-button" aria-label="Open navigation" onClick={() => setNavOpen(true)}>☰</button><div className="breadcrumb"><span>{screenTitles[view]}</span><b>{wizardConfig ? wizardConfig.objective.slice(0, 40) : "Timer LED Controller"}</b></div></div>
+          <div className="project-context"><button><small>Project</small><strong>{wizardConfig ? wizardConfig.board : "Timer LED Controller"}⌄</strong></button><span /><button><small>Board</small><strong>{wizardConfig?.board ?? runData.run.board}⌄</strong></button><span /><button><small>Branch</small><strong>⑂ {wizardConfig ? "new-project" : runData.run.branch}⌄</strong></button></div>
+          <div className="topbar-actions"><span className="connection-pill" title={healthTooltip}><i /> {systemStatus === "Simulator ready" ? "Renode" : systemStatus}</span><button className="notification-button" onClick={() => setNotifications((value) => !value)} aria-label="Notifications">♢<i /></button><button className="avatar-button">AK</button></div>
+          {notifications && <div className="notification-popover"><header><strong>Notifications</strong><button onClick={() => setNotifications(false)}>×</button></header><div style={{ padding: "2rem", textAlign: "center", color: "#888" }}><p>No active task</p><small style={{ fontSize: "0.875rem", marginTop: "0.5rem", display: "block" }}>Notifications require task context (Phase 2)</small></div></div>}
         </header>
         <div className="route-stage" key={view}>
           {view === "dashboard" && <Dashboard navigate={navigate} />}
-          {view === "create" && <CreateProject navigate={navigate} />}
-          {view === "agent" && <AgentWorkspace navigate={navigate} />}
+{view === "create" && <CreateProject navigate={navigate} onLaunch={(config) => setWizardConfig(config)} />}
+{view === "agent" && <AgentWorkspace navigate={navigate} wizardConfig={wizardConfig ?? undefined} />}
           {view === "run" && <RunProgress navigate={navigate} />}
-          {view === "analysis" && <FailureAnalysis navigate={navigate} />}
+          {view === "analysis" && <FailureAnalysis navigate={navigate} taskId={taskId ?? undefined} />}
           {view === "patch" && <PatchReview navigate={navigate} />}
           {view === "success" && <Success navigate={navigate} />}
           {view === "compare" && <RunComparison navigate={navigate} />}
           {view === "history" && <RunHistory navigate={navigate} />}
           {view === "platforms" && <Platforms navigate={navigate} />}
-          {(view === "tests" || view === "reports") && <TestsAndReports view={view} navigate={navigate} />}
+          {(view === "tests" || view === "reports") && <TestsAndReports view={view} navigate={navigate} taskId={taskId ?? undefined} />}
           {view === "settings" && <Settings />}
-          {view === "fsm" && <FSMView navigate={navigate} />}
+          {view === "fsm" && <FSMView navigate={navigate} taskId={taskId ?? undefined} />}
         </div>
       </div>
     </div>
+    </TaskContext.Provider>
   );
 }

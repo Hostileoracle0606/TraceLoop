@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { eq, ilike, or } from 'drizzle-orm';
-import { router, procedure, authenticatedProcedure } from '../context';
+import { router, procedure, authenticatedProcedure, adminProcedure } from '../context';
 import { boards } from '../../db/schema';
 import { validateAssertionForBoard, getBoardForTarget } from '../../../src/engine/board-capabilities';
 
@@ -65,8 +65,8 @@ export const boardsRouter = router({
       return board;
     }),
 
-  /** Create a new board (authenticated). */
-  create: authenticatedProcedure
+  /** Create a new board (admin only). */
+  create: adminProcedure
     .input(boardInputSchema)
     .mutation(async ({ ctx, input }) => {
       const [board] = await ctx.db
@@ -76,8 +76,8 @@ export const boardsRouter = router({
       return board;
     }),
 
-  /** Update a board (authenticated, partial update). */
-  update: authenticatedProcedure
+  /** Update a board (admin only, partial update). */
+  update: adminProcedure
     .input(z.object({
       id: z.string().uuid(),
       ...boardInputSchema.partial().shape,
@@ -95,8 +95,8 @@ export const boardsRouter = router({
       return board;
     }),
 
-  /** Delete a board (authenticated). */
-  delete: authenticatedProcedure
+  /** Delete a board (admin only). */
+  delete: adminProcedure
     .input(z.object({ id: z.string().uuid() }))
     .mutation(async ({ ctx, input }) => {
       await ctx.db

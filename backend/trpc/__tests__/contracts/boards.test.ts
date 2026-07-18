@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { TRPCError } from '@trpc/server';
 import { boardsRouter } from '../../routers/boards';
-import { createMockDb, createMockContext, VALID_UUID, VALID_BOARD_UUID, testUser } from './helpers';
+import { createMockDb, createMockContext, VALID_UUID, VALID_BOARD_UUID, testUser, adminUser } from './helpers';
 
 // Mock board-capabilities module
 vi.mock('../../../../src/engine/board-capabilities', () => ({
@@ -197,7 +197,7 @@ describe('boards router contracts', () => {
     });
 
     it('create accepts valid board input', async () => {
-      const { caller, db } = createCaller(testUser, mockDb);
+      const { caller, db } = createCaller(adminUser, mockDb);
       db.insert.mockReturnValue({
         values: vi.fn().mockReturnValue({
           returning: vi.fn().mockResolvedValue([{ id: VALID_BOARD_UUID, ...validBoardInput }]),
@@ -216,7 +216,7 @@ describe('boards router contracts', () => {
     });
 
     it('create accepts valid status values', async () => {
-      const { caller, db } = createCaller(testUser, mockDb);
+      const { caller, db } = createCaller(adminUser, mockDb);
       db.insert.mockReturnValue({
         values: vi.fn().mockReturnValue({
           returning: vi.fn().mockResolvedValue([{ id: VALID_BOARD_UUID }]),

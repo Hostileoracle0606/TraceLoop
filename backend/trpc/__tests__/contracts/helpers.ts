@@ -84,6 +84,8 @@ export const VALID_PATCH_UUID = 'aa0e8400-e29b-41d4-a716-446655440005';
 export const testUser = { id: 'user-1' };
 /** Different user for ownership tests. */
 export const otherUser = { id: 'user-2' };
+/** Admin user for admin-only procedure tests. */
+export const adminUser = { id: 'user-admin', user_metadata: { role: 'admin' } };
 
 /**
  * Creates a mock context suitable for tRPC caller creation.

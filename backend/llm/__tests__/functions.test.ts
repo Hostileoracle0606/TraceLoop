@@ -3,6 +3,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 // Mock the AI SDK before importing functions
 vi.mock('ai', () => ({
   generateText: vi.fn(),
+  generateObject: vi.fn(),
 }));
 
 // Mock the provider
@@ -10,10 +11,11 @@ vi.mock('../provider', () => ({
   getLLMProvider: vi.fn(() => ({ modelId: 'test-model' })),
 }));
 
-import { generateText } from 'ai';
+import { generateText, generateObject } from 'ai';
 import { clarifyIntent, generatePlan, editSource, proposePatchLLM } from '../functions';
 
 const mockGenerateText = vi.mocked(generateText);
+const mockGenerateObject = vi.mocked(generateObject);
 
 describe('LLM Functions', () => {
   beforeEach(() => {
@@ -75,7 +77,7 @@ describe('LLM Functions', () => {
         summary: 'Add timer-based LED blinking',
       };
 
-      mockGenerateText.mockResolvedValue({ text: JSON.stringify(mockPlan) } as any);
+      mockGenerateObject.mockResolvedValue({ object: mockPlan } as any);
 
       const result = await generatePlan(
         'Blink the green LED every 500ms',
@@ -86,7 +88,7 @@ describe('LLM Functions', () => {
 
       expect(result).toEqual(mockPlan);
       expect(result.steps).toHaveLength(2);
-      expect(mockGenerateText).toHaveBeenCalledTimes(1);
+      expect(mockGenerateObject).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -104,7 +106,7 @@ describe('LLM Functions', () => {
         summary: 'Plan executed successfully',
       };
 
-      mockGenerateText.mockResolvedValue({ text: JSON.stringify(mockResponse) } as any);
+      mockGenerateObject.mockResolvedValue({ object: mockResponse } as any);
 
       const result = await editSource(
         {
@@ -120,8 +122,8 @@ describe('LLM Functions', () => {
     });
 
     it('passes root cause context when provided', async () => {
-      mockGenerateText.mockResolvedValue({
-        text: JSON.stringify({ operations: [], summary: 'Fixed' }),
+      mockGenerateObject.mockResolvedValue({
+        object: { operations: [], summary: 'Fixed' },
       } as any);
 
       const rootCause = {
@@ -142,7 +144,7 @@ describe('LLM Functions', () => {
       );
 
       // Verify the prompt includes root cause context
-      const callArgs = mockGenerateText.mock.calls[0]![0] as any;
+      const callArgs = mockGenerateObject.mock.calls[0]![0] as any;
       expect(callArgs.prompt).toContain('GPIOG_ODR[13]');
       expect(callArgs.prompt).toContain('Wrote to wrong LED pin');
     });
@@ -158,7 +160,7 @@ describe('LLM Functions', () => {
         confidence: 0.95,
       };
 
-      mockGenerateText.mockResolvedValue({ text: JSON.stringify(mockPatch) } as any);
+      mockGenerateObject.mockResolvedValue({ object: mockPatch } as any);
 
       const result = await proposePatchLLM(
         {
@@ -178,12 +180,12 @@ describe('LLM Functions', () => {
       expect(result).toEqual(mockPatch);
       expect(result.confidence).toBeGreaterThan(0);
       expect(result.confidence).toBeLessThanOrEqual(1);
-      expect(mockGenerateText).toHaveBeenCalledTimes(1);
+      expect(mockGenerateObject).toHaveBeenCalledTimes(1);
     });
 
     it('includes root cause and assertion in the prompt', async () => {
-      mockGenerateText.mockResolvedValue({
-        text: JSON.stringify({ file: 'test.c', before: '', after: '', summary: '', confidence: 0.5 }),
+      mockGenerateObject.mockResolvedValue({
+        object: { file: 'src/patch.c', before: '', after: '', summary: '', confidence: 0.5 },
       } as any);
 
       await proposePatchLLM(
@@ -201,7 +203,7 @@ describe('LLM Functions', () => {
         { name: 'pin_high', register: 'GPIOA_ODR[5]', expect: '1', byTime: 1000 }
       );
 
-      const callArgs = mockGenerateText.mock.calls[0]![0] as any;
+      const callArgs = mockGenerateObject.mock.calls[0]![0] as any;
       expect(callArgs.prompt).toContain('GPIOA_ODR[5]');
       expect(callArgs.prompt).toContain('pin_high');
     });

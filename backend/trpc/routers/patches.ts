@@ -3,6 +3,7 @@ import { eq, desc } from 'drizzle-orm';
 import { router, authenticatedProcedure } from '../context';
 import { patches, tasks, projects, runs, activityLogs } from '../../db/schema';
 import { checkPermission } from '../../../src/engine/permissions';
+import { inngest, Events, type TaskRunEventData } from '../../inngest/client';
 
 export const patchesRouter = router({
   // List patches for a task
@@ -148,38 +149,80 @@ export const patchesRouter = router({
         throw new Error(`Cannot approve patch in ${patch.status} state`);
       }
 
-      const [updated] = await ctx.db
-        .update(patches)
-        .set({
-          status: 'approved',
-          approvedBy: ctx.user.id,
-          approvedAt: new Date(),
-        })
-        .where(eq(patches.id, input.id))
-        .returning();
+      // C3: Atomic transaction — approve patch, update task, create run, enqueue rerun
+      const result = await ctx.db.transaction(async (tx) => {
+        const updatedRows = await tx
+          .update(patches)
+          .set({
+            status: 'approved',
+            approvedBy: ctx.user.id,
+            approvedAt: new Date(),
+          })
+          .where(eq(patches.id, input.id))
+          .returning();
 
-      // Record activity log
-      await ctx.db.insert(activityLogs).values({
-        taskId: patch.taskId,
-        fromState: 'patching',
-        toState: 'rerunning',
-        reason: 'patch-approved',
-        actor: 'user',
-        userId: ctx.user.id,
-        iteration: task.iteration,
-        metadata: { patchId: patch.id },
+        const updated = updatedRows[0];
+        if (!updated) throw new Error('Failed to update patch');
+
+        // Update task: set status to 'rerunning', apply patched files, increment iteration
+        const nextIteration = task.iteration + 1;
+        await tx
+          .update(tasks)
+          .set({
+            status: 'rerunning',
+            currentFiles: patch.filesAfterPatch,
+            iteration: nextIteration,
+            updatedAt: new Date(),
+          })
+          .where(eq(tasks.id, patch.taskId));
+
+        // C3: Create a new run for the rerun
+        const runInsert = await tx
+          .insert(runs)
+          .values({
+            taskId: task.id,
+            iteration: nextIteration,
+            status: 'pending',
+            buildStartedAt: new Date(),
+          })
+          .returning();
+
+        const run = runInsert[0];
+        if (!run) throw new Error('Failed to create run');
+
+        // Record activity log
+        await tx.insert(activityLogs).values({
+          taskId: patch.taskId,
+          fromState: 'patching',
+          toState: 'rerunning',
+          reason: 'patch-approved',
+          actor: 'user',
+          userId: ctx.user.id,
+          iteration: task.iteration,
+          metadata: { patchId: patch.id, runId: run.id },
+        });
+
+        return { updated, run, nextIteration };
       });
 
-      // Update task files to patched version
-      await ctx.db
-        .update(tasks)
-        .set({
-          currentFiles: patch.filesAfterPatch,
-          updatedAt: new Date(),
-        })
-        .where(eq(tasks.id, patch.taskId));
+      // C3: Enqueue rerun (outside transaction — Inngest send is not transactional)
+      const eventData: TaskRunEventData = {
+        taskId: task.id,
+        runId: result.run.id,
+        userId: ctx.user.id,
+        projectId: task.projectId,
+        iteration: result.nextIteration,
+        files: patch.filesAfterPatch,
+        boardId: project.boardId!,
+        acceptanceCriteria: task.acceptanceCriteria,
+      };
 
-      return updated;
+      await inngest.send({
+        name: Events.TASK_RUN_REQUESTED,
+        data: eventData,
+      });
+
+      return result.updated;
     }),
 
   // Reject a patch
@@ -212,25 +255,39 @@ export const patchesRouter = router({
         throw new Error(`Cannot reject patch in ${patch.status} state`);
       }
 
-      const [updated] = await ctx.db
-        .update(patches)
-        .set({
-          status: 'rejected',
-          rejectionReason: input.reason,
-        })
-        .where(eq(patches.id, input.id))
-        .returning();
+      // C3: Atomic transaction — reject patch, set task back to editing
+      const updated = await ctx.db.transaction(async (tx) => {
+        const [rejected] = await tx
+          .update(patches)
+          .set({
+            status: 'rejected',
+            rejectionReason: input.reason,
+          })
+          .where(eq(patches.id, input.id))
+          .returning();
 
-      // Record activity log
-      await ctx.db.insert(activityLogs).values({
-        taskId: patch.taskId,
-        fromState: 'patching',
-        toState: 'editing',
-        reason: 'patch-rejected',
-        actor: 'user',
-        userId: ctx.user.id,
-        iteration: task.iteration,
-        metadata: { patchId: patch.id, reason: input.reason },
+        // C3: Set task status back to 'editing'
+        await tx
+          .update(tasks)
+          .set({
+            status: 'editing',
+            updatedAt: new Date(),
+          })
+          .where(eq(tasks.id, patch.taskId));
+
+        // Record activity log
+        await tx.insert(activityLogs).values({
+          taskId: patch.taskId,
+          fromState: 'patching',
+          toState: 'editing',
+          reason: 'patch-rejected',
+          actor: 'user',
+          userId: ctx.user.id,
+          iteration: task.iteration,
+          metadata: { patchId: patch.id, reason: input.reason },
+        });
+
+        return rejected;
       });
 
       return updated;

@@ -1,212 +1,173 @@
-import React, { useState, useEffect } from 'react';
-import { AgentState, StateTransition } from './types';
-import { StateIndicator } from './StateIndicator';
-import { StateProgressBar } from './StateProgressBar';
-import { StateActionPanel } from './StateActionPanel';
-import { StateTransitionTimeline } from './StateTransitionTimeline';
+import React from 'react';
+import { trpc } from '../../lib/trpc';
 
 interface FSMIntegrationProps {
   taskId: string;
-  initialStatus?: AgentState;
 }
 
-interface TaskData {
-  id: string;
-  status: AgentState;
-  iteration: number;
-  currentFiles?: Record<string, string>;
-  activityLogs: StateTransition[];
-}
+export const FSMIntegration: React.FC<FSMIntegrationProps> = ({ taskId }) => {
+  // Fetch task data using tRPC
+  const { data: task, isLoading, error, refetch } = trpc.tasks.get.useQuery(
+    { id: taskId },
+    { enabled: !!taskId, refetchInterval: 2000 } // Poll every 2s
+  );
 
-export const FSMIntegration: React.FC<FSMIntegrationProps> = ({ 
-  taskId,
-  initialStatus = 'planning'
-}) => {
-  const [task, setTask] = useState<TaskData | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [transitioning, setTransitioning] = useState(false);
+  // Fetch activity log separately
+  const { data: activityLogs } = trpc.tasks.getActivityLog.useQuery(
+    { taskId },
+    { enabled: !!taskId, refetchInterval: 2000 }
+  );
 
-  // Fetch task data
-  const fetchTask = async () => {
-    try {
-      setLoading(true);
-      setError(null);
-      
-      const response = await fetch(`http://localhost:3000/tasks.get`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          id: taskId,
-        }),
-      });
+  // Mutations
+  const stopMutation = trpc.tasks.stop.useMutation({
+    onSuccess: () => refetch(),
+  });
 
-      if (!response.ok) {
-        throw new Error(`Failed to fetch task: ${response.statusText}`);
-      }
-
-      const data = await response.json();
-      setTask({
-        id: data.id,
-        status: data.status as AgentState,
-        iteration: data.iteration,
-        currentFiles: data.currentFiles,
-        activityLogs: data.activityLogs || [],
-      });
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Unknown error');
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  // Transition task state
-  const transitionState = async (toState: AgentState, reason: string) => {
+  const handleStop = () => {
     if (!task) return;
-
-    try {
-      setTransitioning(true);
-      
-      const response = await fetch(`http://localhost:3000/tasks.transition`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          taskId: task.id,
-          toState,
-          reason,
-        }),
-      });
-
-      if (!response.ok) {
-        throw new Error(`Failed to transition: ${response.statusText}`);
-      }
-
-      // Refresh task data
-      await fetchTask();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Transition failed');
-    } finally {
-      setTransitioning(false);
-    }
+    stopMutation.mutate({
+      taskId: task.id,
+      reason: 'user-stopped',
+    });
   };
 
-  // Stop task
-  const stopTask = async () => {
-    if (!task) return;
-
-    try {
-      setTransitioning(true);
-      
-      const response = await fetch(`http://localhost:3000/tasks.stop`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          taskId: task.id,
-          reason: 'user-cancelled',
-        }),
-      });
-
-      if (!response.ok) {
-        throw new Error(`Failed to stop task: ${response.statusText}`);
-      }
-
-      // Refresh task data
-      await fetchTask();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : 'Stop failed');
-    } finally {
-      setTransitioning(false);
-    }
-  };
-
-  // Initial fetch
-  useEffect(() => {
-    fetchTask();
-  }, [taskId]);
-
-  if (loading) {
+  if (isLoading) {
     return (
-      <div className="flex items-center justify-center p-8">
-        <div className="text-gray-400">Loading task state...</div>
+      <div className="panel">
+        <p>Loading task state...</p>
       </div>
     );
   }
 
   if (error) {
     return (
-      <div className="bg-red-900 bg-opacity-20 border border-red-900 rounded-lg p-6">
-        <div className="text-red-400 font-semibold mb-2">Error</div>
-        <div className="text-red-300 text-sm">{error}</div>
-        <button
-          onClick={fetchTask}
-          className="mt-4 px-4 py-2 bg-red-900 bg-opacity-30 hover:bg-opacity-50 text-red-400 rounded transition-colors"
-        >
-          Retry
-        </button>
+      <div className="panel" style={{ borderColor: 'var(--color-red)' }}>
+        <div style={{ color: 'var(--color-red)' }}>
+          <strong>Error loading task</strong>
+          <p>{error.message}</p>
+          <button className="button button-secondary" onClick={() => refetch()} style={{ marginTop: '1rem' }}>
+            Retry
+          </button>
+        </div>
       </div>
     );
   }
 
   if (!task) {
     return (
-      <div className="bg-gray-900 rounded-lg p-6 text-center text-gray-400">
-        Task not found
+      <div className="panel">
+        <p>Task not found</p>
       </div>
     );
   }
 
+  const stateLabels: Record<string, string> = {
+    'clarification-needed': 'Clarification needed',
+    'planning': 'Planning',
+    'editing': 'Editing',
+    'building': 'Building',
+    'simulating': 'Simulating',
+    'analyzing': 'Analyzing',
+    'patching': 'Patching',
+    'rerunning': 'Rerunning',
+    'completed': 'Completed',
+    'blocked': 'Blocked',
+    'stopped': 'Stopped',
+  };
+
+  const stateTone = (status: string): 'neutral' | 'blue' | 'green' | 'amber' | 'red' => {
+    if (status === 'completed') return 'green';
+    if (status === 'blocked' || status === 'stopped') return 'red';
+    if (status === 'clarification-needed') return 'amber';
+    return 'blue';
+  };
+
+  const canStop = !['completed', 'stopped', 'blocked'].includes(task.status);
+
   return (
-    <div className="space-y-6">
-      {/* Progress Bar */}
-      <StateProgressBar 
-        currentState={task.status}
-        onStateClick={(state) => console.log('State clicked:', state)}
-      />
-
-      {/* Current State and Actions */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Left: Action Panel */}
-        <StateActionPanel
-          currentState={task.status}
-          onTransition={transitionState}
-          onStop={stopTask}
-          disabled={transitioning}
-        />
-
-        {/* Right: Timeline */}
-        <div className="bg-gray-900 rounded-lg p-6 border border-gray-800">
-          <StateTransitionTimeline
-            transitions={task.activityLogs}
-            currentState={task.status}
-          />
-        </div>
-      </div>
-
-      {/* Task Info */}
-      <div className="bg-gray-900 rounded-lg p-4 border border-gray-800">
-        <div className="flex items-center justify-between text-sm">
-          <div className="flex items-center gap-4">
-            <span className="text-gray-400">Task ID:</span>
-            <span className="font-mono text-white">{task.id}</span>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
+      {/* Current State */}
+      <div className="panel">
+        <header className="panel-head">
+          <div>
+            <span className="eyebrow">Current state</span>
+            <h3>Agent FSM</h3>
           </div>
-          <div className="flex items-center gap-4">
-            <span className="text-gray-400">Iteration:</span>
-            <span className="font-mono text-white">{task.iteration}</span>
-          </div>
-          <div className="flex items-center gap-4">
-            <span className="text-gray-400">Files:</span>
-            <span className="font-mono text-white">
-              {task.currentFiles ? Object.keys(task.currentFiles).length : 0}
+          <div className="panel-action">
+            <span className={`badge badge-${stateTone(task.status)}`}>
+              {stateLabels[task.status] || task.status}
             </span>
           </div>
+        </header>
+        <div style={{ padding: '1rem' }}>
+          <div style={{ display: 'flex', gap: '1rem', marginBottom: '1rem' }}>
+            <div style={{ flex: 1 }}>
+              <small style={{ color: 'var(--color-text-muted)' }}>Task ID</small>
+              <div><code>{task.id}</code></div>
+            </div>
+            <div style={{ flex: 1 }}>
+              <small style={{ color: 'var(--color-text-muted)' }}>Iteration</small>
+              <div><strong>{task.iteration}</strong></div>
+            </div>
+            <div style={{ flex: 1 }}>
+              <small style={{ color: 'var(--color-text-muted)' }}>Files</small>
+              <div><strong>{task.currentFiles ? Object.keys(task.currentFiles).length : 0}</strong></div>
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: '0.5rem', marginTop: '1.5rem' }}>
+            {canStop && (
+              <button
+                className="button button-danger"
+                onClick={handleStop}
+                disabled={stopMutation.isPending}
+              >
+                {stopMutation.isPending ? 'Stopping...' : 'Stop agent'}
+              </button>
+            )}
+          </div>
         </div>
       </div>
+
+      {/* Activity Timeline */}
+      {activityLogs && activityLogs.length > 0 && (
+        <div className="panel">
+          <header className="panel-head">
+            <h3>State history</h3>
+          </header>
+          <div style={{ padding: '1rem' }}>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
+              {activityLogs.slice().reverse().map((log: any, idx: number) => (
+                <div key={idx} style={{ display: 'flex', alignItems: 'center', gap: '1rem', padding: '0.5rem', borderRadius: '0.25rem', background: 'var(--color-panel-bg)' }}>
+                  <div style={{ flex: '0 0 auto', width: '8rem' }}>
+                    <small style={{ color: 'var(--color-text-muted)' }}>
+                      {log.timestamp ? new Date(log.timestamp).toLocaleTimeString() : 'Recent'}
+                    </small>
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    {log.fromState && (
+                      <>
+                        <span className={`badge badge-${stateTone(log.fromState)}`} style={{ fontSize: '0.75rem' }}>
+                          {stateLabels[log.fromState] || log.fromState}
+                        </span>
+                        <span style={{ margin: '0 0.5rem' }}>→</span>
+                      </>
+                    )}
+                    <span className={`badge badge-${stateTone(log.toState)}`}>
+                      {stateLabels[log.toState] || log.toState}
+                    </span>
+                  </div>
+                  <div style={{ flex: 2, color: 'var(--color-text-muted)', fontSize: '0.875rem' }}>
+                    {log.reason}
+                  </div>
+                  <div style={{ flex: '0 0 auto' }}>
+                    <small style={{ color: 'var(--color-text-muted)' }}>Iteration {log.iteration ?? '?'}</small>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
