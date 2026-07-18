@@ -21,6 +21,14 @@ type View =
   | "settings"
   | "fsm";
 
+type WizardConfig = {
+  board: string;
+  source: string;
+  objective: string;
+  framework: string;
+  duration: string;
+};
+
 type EventId = "e1" | "e2" | "e3" | "e4" | "e5" | "e6";
 
 type TraceEventVM = {
@@ -256,10 +264,11 @@ function Dashboard({ navigate }: { navigate: (view: View) => void }) {
 
 const wizardSteps = ["Choose board", "Firmware source", "Objective", "Test scenario", "Review & launch"];
 
-function CreateProject({ navigate }: { navigate: (view: View) => void }) {
+function CreateProject({ navigate, onLaunch }: { navigate: (view: View) => void; onLaunch: (config: WizardConfig) => void }) {
   const [step, setStep] = useState(1);
   const [board, setBoard] = useState("STM32F4 Discovery");
   const [source, setSource] = useState("Generate new firmware with AI");
+  const [objective, setObjective] = useState("Use Timer 2 to turn on the green LED within 2 milliseconds.");
   const [framework, setFramework] = useState("Zephyr");
   const [duration, setDuration] = useState("3000");
 
@@ -330,7 +339,7 @@ function CreateProject({ navigate }: { navigate: (view: View) => void }) {
           {step === 3 && (
             <div>
               <div className="section-intro"><span className="step-number">03</span><div><h2>Describe the objective</h2><p>Use plain language. TraceLoop will convert it into source changes and measurable requirements.</p></div></div>
-              <label className="prompt-box"><span>Firmware objective</span><textarea defaultValue="Use Timer 2 to turn on the green LED within 2 milliseconds." /><small>⌁ The agent will inspect board capabilities before generating code.</small></label>
+<label className="prompt-box"><span>Firmware objective</span><textarea value={objective} onChange={(e) => setObjective(e.target.value)} /><small>⌁ The agent will inspect board capabilities before generating code.</small></label>
               <h3 className="subheading">Structured requirements</h3>
               <div className="requirements-grid">
                 {[["Target LED", "Green LED"], ["Trigger", "Timer 2"], ["Deadline", "2 ms"], ["Expected state", "On"], ["Language", "C"]].map(([label, value]) => <label key={label}><span>{label}</span><input defaultValue={value} /></label>)}
@@ -370,7 +379,7 @@ function CreateProject({ navigate }: { navigate: (view: View) => void }) {
                   <div className="review-list">
                     <div><span>Board platform</span><strong>{board}</strong></div>
                     <div><span>Firmware source</span><strong>{source}</strong></div>
-                    <div><span>Objective</span><strong>Timer 2 → green LED within 2 ms</strong></div>
+<div><span>Objective</span><strong>{objective || "Not specified"}</strong></div>
                     <div><span>Framework</span><strong>{framework} · C</strong></div>
                     <div><span>Build command</span><code>west build -b stm32f4_disco</code></div>
                   </div>
@@ -392,7 +401,7 @@ function CreateProject({ navigate }: { navigate: (view: View) => void }) {
           <footer className="wizard-footer">
             <Button tone="ghost" onClick={step === 1 ? () => navigate("dashboard") : back}>{step === 1 ? "Cancel" : "← Back"}</Button>
             <span>Step {step} of 5</span>
-            <Button tone="primary" onClick={step === 5 ? () => navigate("agent") : next} testId={step === 5 ? "launch-agent" : "wizard-next"}>{step === 5 ? "Generate and run firmware  →" : "Continue  →"}</Button>
+<Button tone="primary" onClick={step === 5 ? () => { onLaunch({ board, source, objective, framework, duration }); navigate("agent"); } : next} testId={step === 5 ? "launch-agent" : "wizard-next"}>{step === 5 ? "Generate and run firmware  →" : "Continue  →"}</Button>
           </footer>
         </main>
       </div>
@@ -444,7 +453,7 @@ interface ChatMessage {
   text: string;
 }
 
-function AgentWorkspace({ navigate }: { navigate: (view: View) => void }) {
+function AgentWorkspace({ navigate, wizardConfig }: { navigate: (view: View) => void; wizardConfig?: WizardConfig }) {
   // Engine-derived steps: reflect the actual pipeline state from runData.
   const runFailed = runData.run.status === 'fail';
   const steps = [
@@ -457,8 +466,8 @@ function AgentWorkspace({ navigate }: { navigate: (view: View) => void }) {
   ] as const;
 
   const [messages, setMessages] = useState<ChatMessage[]>([
-    { role: 'user', text: 'Use Timer 2 to turn on the green LED within 2 milliseconds.' },
-    { role: 'agent', text: `I'll inspect the board, generate Zephyr firmware, compile it, and test the behavior in Renode.` },
+    { role: 'user', text: wizardConfig?.objective || 'Use Timer 2 to turn on the green LED within 2 milliseconds.' },
+    { role: 'agent', text: `I'll inspect the ${wizardConfig?.board || 'STM32F4 Discovery'} board, generate ${wizardConfig?.framework || 'Zephyr'} firmware, compile it, and test the behavior in Renode.` },
   ]);
   const [input, setInput] = useState('');
 
@@ -657,11 +666,11 @@ function FailureAnalysis({ navigate }: { navigate: (view: View) => void }) {
           <div className="debug-toolbar">
             <div><button aria-label="Previous event">‹</button><button aria-label="Play trace" className="play">▶</button><button aria-label="Next event">›</button></div>
             <div className="scrubber"><span>0 µs</span><input aria-label="Trace time" type="range" min="0" max="2000" value={event.time} readOnly /><strong>{event.time} µs</strong><span>2000 µs</span></div>
-            <div><button>−</button><span>100%</span><button>＋</button><button>Fit</button></div>
+            <div><button disabled title="Coming soon">−</button><span>100%</span><button disabled title="Coming soon">＋</button><button disabled title="Coming soon">Fit</button></div>
           </div>
           <div className={`debug-grid active-${debugTab}`}>
             <Panel eyebrow="WHEN" title="Signal timeline" className="debug-panel timeline-panel" action={<Badge tone="blue">9 lanes</Badge>}><TraceTimeline selected={selected} select={setSelected} /></Panel>
-            <Panel eyebrow="WHERE" title="Virtual board" className="debug-panel board-panel" action={<button className="panel-tool">Isolate component</button>}><BoardDiagram selected={selected} select={setSelected} /></Panel>
+<Panel eyebrow="WHERE" title="Virtual board" className="debug-panel board-panel" action={<button className="panel-tool" disabled title="Coming soon">Isolate component</button>}><BoardDiagram selected={selected} select={setSelected} /></Panel>
             <Panel eyebrow="WHY" title="Causal graph" className="debug-panel graph-panel" action={<Badge tone="green">Grounded</Badge>}><CausalGraph selected={selected} select={setSelected} /></Panel>
           </div>
           <div className="event-inspector">
@@ -672,7 +681,7 @@ function FailureAnalysis({ navigate }: { navigate: (view: View) => void }) {
             <div className="event-field"><small>Register</small><code>{event.register}</code></div>
             <div className="event-field"><small>Value</small><code>{event.value}</code></div>
             <div className="event-field"><small>Confidence</small><strong>0.99</strong></div>
-            <button className="event-more">Raw Renode evidence ›</button>
+            <button className="event-more" disabled title="Coming soon">Raw Renode evidence ›</button>
           </div>
           <div className="evidence-panel">
             <div className="evidence-heading"><div className="evidence-icon">◎</div><div><span className="eyebrow">Grounded in trace evidence</span><h2>Root cause: <code>timer_isr</code> wrote GPIO pin 13 instead of GPIO pin 12.</h2></div><Badge tone="green">High confidence · 0.99</Badge></div>
@@ -767,8 +776,8 @@ function RunHistory({ navigate }: { navigate: (view: View) => void }) {
   return (
     <div className="page history-page">
       <div className="page-heading"><div><span className="eyebrow">Trace archive</span><h1>Simulation runs</h1><p>Browse, filter, compare, and reopen every evidence trace.</p></div><Button tone="primary" onClick={() => navigate("create")}>＋ New run</Button></div>
-      <div className="filterbar"><label className="search-field"><span>⌕</span><input aria-label="Search runs" placeholder="Search run, branch, test, or root cause…" /></label><select aria-label="Status filter" value={status} onChange={(e) => setStatus(e.target.value)}><option>All statuses</option><option>Failed</option><option>Passed</option><option>Running</option></select><select aria-label="Board filter"><option>All boards</option><option>STM32F4 Discovery</option><option>nRF52840 DK</option></select><select aria-label="Branch filter"><option>All branches</option><option>agent/timer2-led</option><option>main</option></select><button>More filters</button></div>
-      <Panel className="table-panel"><div className="data-table"><div className="table-row table-head"><span>Run ID</span><span>Timestamp</span><span>Revision</span><span>Board</span><span>Iteration</span><span>Tests</span><span>Root cause</span><span>Duration</span><span>Status</span></div>{filtered.map((row) => <button className="table-row" key={row[0]} onClick={() => navigate(row[8] === "Failed" ? "analysis" : row[8] === "Running" ? "run" : "success")}><code>{row[0]}</code><span>{row[1]}</span><code>{row[2]}</code><span>{row[3]}</span><span>Agent {row[4]}</span><strong>{row[5]}</strong><span>{row[6]}</span><code>{row[7]}</code><span><Badge tone={row[8] === "Failed" ? "red" : row[8] === "Passed" ? "green" : "blue"}>{row[8]}</Badge></span></button>)}</div><footer className="table-footer"><span>Showing {filtered.length} of 84 runs</span><div><button disabled>‹</button><button className="active">1</button><button>2</button><button>3</button><button>›</button></div></footer></Panel>
+      <div className="filterbar"><label className="search-field"><span>⌕</span><input aria-label="Search runs" placeholder="Search run, branch, test, or root cause…" /></label><select aria-label="Status filter" value={status} onChange={(e) => setStatus(e.target.value)}><option>All statuses</option><option>Failed</option><option>Passed</option><option>Running</option></select><select aria-label="Board filter"><option>All boards</option><option>STM32F4 Discovery</option><option>nRF52840 DK</option></select><select aria-label="Branch filter"><option>All branches</option><option>agent/timer2-led</option><option>main</option></select><button disabled title="Coming soon">More filters</button></div>
+      <Panel className="table-panel"><div className="data-table"><div className="table-row table-head"><span>Run ID</span><span>Timestamp</span><span>Revision</span><span>Board</span><span>Iteration</span><span>Tests</span><span>Root cause</span><span>Duration</span><span>Status</span></div>{filtered.map((row) => <button className="table-row" key={row[0]} onClick={() => navigate(row[8] === "Failed" ? "analysis" : row[8] === "Running" ? "run" : "success")}><code>{row[0]}</code><span>{row[1]}</span><code>{row[2]}</code><span>{row[3]}</span><span>Agent {row[4]}</span><strong>{row[5]}</strong><span>{row[6]}</span><code>{row[7]}</code><span><Badge tone={row[8] === "Failed" ? "red" : row[8] === "Passed" ? "green" : "blue"}>{row[8]}</Badge></span></button>)}</div><footer className="table-footer"><span>Showing {filtered.length} of {runRows.length} runs</span><div><button disabled>‹</button><button className="active">1</button><button disabled title="Coming soon">2</button><button disabled title="Coming soon">3</button><button disabled>›</button></div></footer></Panel>
     </div>
   );
 }
@@ -803,10 +812,19 @@ function TestsAndReports({ view, navigate }: { view: "tests" | "reports"; naviga
 
 function Settings() {
   const [permission, setPermission] = useState("Review every patch");
+  const [activeTab, setActiveTab] = useState("Runtime & toolchains");
+  const settingsTabs = ["Runtime & toolchains", "Source control", "Agent & models", "Permissions", "Data retention", "Notifications"];
   return (
     <div className="page settings-page">
       <div className="page-heading"><div><span className="eyebrow">Workspace configuration</span><h1>Settings & integrations</h1><p>Control tools, model access, permissions, and trace retention.</p></div><Badge tone="green">All core systems ready</Badge></div>
-      <div className="settings-layout"><aside className="settings-nav">{["Runtime & toolchains", "Source control", "Agent & models", "Permissions", "Data retention", "Notifications"].map((item, index) => <button className={index === 0 ? "active" : ""} key={item}>{item}<span>›</span></button>)}</aside><main className="settings-main"><Panel title="Runtime & toolchains" eyebrow="Local execution"><div className="integration-list">{[["Renode", "1.15.3", "Connected", "Virtual hardware simulation"], ["Zephyr SDK", "0.17.2", "Ready", "ARM and RISC-V toolchains"], ["CMake + Ninja", "3.29 · 1.12", "Ready", "Firmware build system"], ["MCP server", "traceloop-renode", "Connected", "Agent tool bridge"]].map(([name, version, status, desc]) => <div className="integration-row" key={name}><span className="integration-icon">{name.slice(0, 2).toUpperCase()}</span><div><strong>{name}</strong><small>{desc}</small></div><code>{version}</code><Badge tone="green">● {status}</Badge><button>Configure</button></div>)}</div></Panel><Panel title="Connections"><div className="integration-list"><div className="integration-row"><span className="integration-icon git">⑂</span><div><strong>GitHub</strong><small>traceloop-labs · 12 repositories</small></div><Badge tone="green">Connected</Badge><button>Manage</button></div><div className="integration-row"><span className="integration-icon">ZE</span><div><strong>Zephyr SDK</strong><small>Author, build & simulate firmware for the agent</small></div><Badge tone="green">Connected</Badge><button>Manage</button></div></div></Panel><Panel title="Agent configuration"><div className="settings-form"><label><span>AI model</span><select><option>GPT-5.2 · firmware agent</option></select></label><label><span>Source-change permission</span><select value={permission} onChange={(e) => setPermission(e.target.value)}><option>Review every patch</option><option>Allow low-risk changes</option></select></label><label><span>Trace retention</span><select><option>90 days</option><option>30 days</option><option>1 year</option></select></label></div><div className="permission-callout"><span>◎</span><div><strong>Human approval stays in the loop</strong><p>Destructive commands, firmware source changes, commits, and external side effects require explicit approval.</p></div></div></Panel></main></div>
+      <div className="settings-layout"><aside className="settings-nav">{settingsTabs.map((item) => <button className={activeTab === item ? "active" : ""} key={item} onClick={() => setActiveTab(item)}>{item}<span>›</span></button>)}</aside><main className="settings-main">
+        {activeTab === "Runtime & toolchains" && <Panel title="Runtime & toolchains" eyebrow="Local execution"><div className="integration-list">{[["Renode", "1.15.3", "Connected", "Virtual hardware simulation"], ["Zephyr SDK", "0.17.2", "Ready", "ARM and RISC-V toolchains"], ["CMake + Ninja", "3.29 · 1.12", "Ready", "Firmware build system"], ["MCP server", "traceloop-renode", "Connected", "Agent tool bridge"]].map(([name, version, status, desc]) => <div className="integration-row" key={name}><span className="integration-icon">{name.slice(0, 2).toUpperCase()}</span><div><strong>{name}</strong><small>{desc}</small></div><code>{version}</code><Badge tone="green">● {status}</Badge><button disabled title="Coming soon">Configure</button></div>)}</div></Panel>}
+        {activeTab === "Source control" && <Panel title="Connections"><div className="integration-list"><div className="integration-row"><span className="integration-icon git">⑂</span><div><strong>GitHub</strong><small>traceloop-labs · 12 repositories</small></div><Badge tone="green">Connected</Badge><button disabled title="Coming soon">Manage</button></div><div className="integration-row"><span className="integration-icon">ZE</span><div><strong>Zephyr SDK</strong><small>Author, build & simulate firmware for the agent</small></div><Badge tone="green">Connected</Badge><button disabled title="Coming soon">Manage</button></div></div></Panel>}
+        {activeTab === "Agent & models" && <Panel title="Agent configuration"><div className="settings-form"><label><span>AI model</span><select><option>GPT-4.1 · firmware agent</option></select></label><label><span>Endpoint URL</span><input defaultValue="https://api.openai.com/v1" readOnly /></label><label><span>Source-change permission</span><select value={permission} onChange={(e) => setPermission(e.target.value)}><option>Review every patch</option><option>Allow low-risk changes</option></select></label></div><div className="permission-callout"><span>◎</span><div><strong>Human approval stays in the loop</strong><p>Destructive commands, firmware source changes, commits, and external side effects require explicit approval.</p></div></div></Panel>}
+        {activeTab === "Permissions" && <Panel title="Permissions"><div className="settings-form"><label><span>Source-change permission</span><select value={permission} onChange={(e) => setPermission(e.target.value)}><option>Review every patch</option><option>Allow low-risk changes</option></select></label></div><div className="permission-callout"><span>◎</span><div><strong>Human approval stays in the loop</strong><p>Destructive commands, firmware source changes, commits, and external side effects require explicit approval.</p></div></div></Panel>}
+        {activeTab === "Data retention" && <Panel title="Data retention"><div className="settings-form"><label><span>Trace retention</span><select><option>90 days</option><option>30 days</option><option>1 year</option></select></label></div></Panel>}
+        {activeTab === "Notifications" && <Panel title="Notifications"><div className="settings-form"><label><span>Email notifications</span><select><option>On failure only</option><option>All events</option><option>Off</option></select></label></div></Panel>}
+      </main></div>
     </div>
   );
 }
@@ -888,6 +906,7 @@ export default function Home() {
   const [view, setView] = useState<View>("analysis");
   const [navOpen, setNavOpen] = useState(false);
   const [notifications, setNotifications] = useState(false);
+  const [wizardConfig, setWizardConfig] = useState<WizardConfig | null>(null);
   const activeNav = useMemo(() => {
     if (["analysis", "run", "success", "compare", "history", "patch"].includes(view)) return "history";
     if (view === "create") return "dashboard";
@@ -906,15 +925,15 @@ export default function Home() {
       {navOpen && <button className="nav-backdrop" aria-label="Close navigation" onClick={() => setNavOpen(false)} />}
       <div className="app-main">
         <header className="global-topbar">
-          <div className="topbar-left"><button className="menu-button" aria-label="Open navigation" onClick={() => setNavOpen(true)}>☰</button><div className="breadcrumb"><span>{screenTitles[view]}</span><b>Timer LED Controller</b></div></div>
-          <div className="project-context"><button><small>Project</small><strong>Timer LED Controller⌄</strong></button><span /><button><small>Board</small><strong>STM32F4 Discovery⌄</strong></button><span /><button><small>Branch</small><strong>⑂ agent/timer2-led⌄</strong></button></div>
+          <div className="topbar-left"><button className="menu-button" aria-label="Open navigation" onClick={() => setNavOpen(true)}>☰</button><div className="breadcrumb"><span>{screenTitles[view]}</span><b>{wizardConfig ? wizardConfig.objective.slice(0, 40) : "Timer LED Controller"}</b></div></div>
+          <div className="project-context"><button><small>Project</small><strong>{wizardConfig ? wizardConfig.board : "Timer LED Controller"}⌄</strong></button><span /><button><small>Board</small><strong>{wizardConfig?.board ?? runData.run.board}⌄</strong></button><span /><button><small>Branch</small><strong>⑂ {wizardConfig ? "new-project" : runData.run.branch}⌄</strong></button></div>
           <div className="topbar-actions"><button className="connection-pill"><i /> Renode</button><button className="notification-button" onClick={() => setNotifications((value) => !value)} aria-label="Notifications">♢<i /></button><button className="avatar-button">AK</button></div>
-          {notifications && <div className="notification-popover"><header><strong>Notifications</strong><button onClick={() => setNotifications(false)}>×</button></header><div><span className="notify-icon fail">!</span><p><strong>RUN-1042 needs attention</strong><small>Root cause found · 6m ago</small></p></div><div><span className="notify-icon pass">✓</span><p><strong>UART gateway patch passed</strong><small>12 tests passed · 42m ago</small></p></div></div>}
+          {notifications && <div className="notification-popover"><header><strong>Notifications</strong><button onClick={() => setNotifications(false)}>×</button></header><div><span className="notify-icon fail">!</span><p><strong>{runData.run.id} needs attention</strong><small>{runData.rootCauseText} · 6m ago</small></p></div><div><span className="notify-icon pass">✓</span><p><strong>UART gateway patch passed</strong><small>12 tests passed · 42m ago</small></p></div></div>}
         </header>
         <div className="route-stage" key={view}>
           {view === "dashboard" && <Dashboard navigate={navigate} />}
-          {view === "create" && <CreateProject navigate={navigate} />}
-          {view === "agent" && <AgentWorkspace navigate={navigate} />}
+{view === "create" && <CreateProject navigate={navigate} onLaunch={(config) => setWizardConfig(config)} />}
+{view === "agent" && <AgentWorkspace navigate={navigate} wizardConfig={wizardConfig ?? undefined} />}
           {view === "run" && <RunProgress navigate={navigate} />}
           {view === "analysis" && <FailureAnalysis navigate={navigate} />}
           {view === "patch" && <PatchReview navigate={navigate} />}
