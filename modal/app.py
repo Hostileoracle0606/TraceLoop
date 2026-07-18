@@ -38,8 +38,8 @@ image = (
         "libffi-dev",
         "device-tree-compiler",
     )
-    # Install west (Zephyr's meta-tool)
-    .run_commands("pip install west")
+    # Install west (Zephyr's meta-tool) and jsonschema (required by west)
+    .run_commands("pip install west jsonschema")
     # Clone Zephyr and install the toolchain
     # This is the expensive part — ~5-10 minutes on first build
     .run_commands(
@@ -126,7 +126,7 @@ quit
 
 
 @app.function()
-@modal.web_endpoint(method="POST")
+@modal.fastapi_endpoint(method="POST")
 def firmware_job(request: dict) -> dict:
     """
     The compute-plane seam. Receives a FirmwareJobRequest, returns a FirmwareJobResult.
