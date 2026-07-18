@@ -12,11 +12,11 @@ Deploy:
 The endpoint URL is printed on deploy. Point ModalFirmwareJobRunner at it.
 """
 
-import json
 import os
 import subprocess
 import tempfile
 from pathlib import Path
+from typing import Optional
 
 import modal
 
@@ -80,6 +80,51 @@ image = (
 app = modal.App("traceloop-firmware-job", image=image)
 
 
+def _run_command(
+    cmd: list[str],
+    timeout: int,
+    cwd: Optional[str] = None,
+) -> tuple[Optional[subprocess.CompletedProcess], bool]:
+    """
+    Run a subprocess with common parameters. Returns (result, timed_out).
+    If timed_out is True, result is None and the caller should handle the timeout.
+    """
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            cwd=cwd,
+        )
+        return result, False
+    except subprocess.TimeoutExpired:
+        return None, True
+
+
+def _generate_resc_script(elf_path: Path) -> str:
+    """
+    Generate a Renode .resc script for STM32F4 trace logging.
+
+    NOTE: This is hardcoded for the single-board demo scenario (ADR-0002).
+    If we support other boards, this needs to become board-aware:
+    - Different platform descriptions (stm32f4.repl vs nrf52840.repl)
+    - Different peripheral names to log (timer2 vs TIMER1, etc.)
+    - Different GPIO port names (gpioPortG vs gpioPortD)
+    For now, YAGNI — we only have one scenario.
+    """
+    return f"""mach create "stm32f4"
+machine LoadPlatformDescription @platforms/cpus/stm32f4.repl
+sysbus LoadELF @{elf_path}
+cpu LogFunctionNames true
+sysbus LogPeripheralAccess timer2 true
+sysbus LogPeripheralAccess nvic true
+sysbus LogPeripheralAccess gpioPortG true
+emulation RunFor "0.05"
+quit
+"""
+
+
 @app.function()
 @modal.web_endpoint(method="POST")
 def firmware_job(request: dict) -> dict:
@@ -121,15 +166,12 @@ def firmware_job(request: dict) -> dict:
             str(workdir_path),
         ]
 
-        try:
-            build_result = subprocess.run(
-                build_cmd,
-                capture_output=True,
-                text=True,
-                timeout=300,  # 5-minute build timeout
-                env={**os.environ, "ZEPHYR_BASE": os.environ["ZEPHYR_BASE"]},
-            )
-        except subprocess.TimeoutExpired:
+        build_result, build_timed_out = _run_command(
+            build_cmd,
+            timeout=300,  # 5-minute build timeout
+        )
+
+        if build_timed_out:
             return {
                 "build": {
                     "ok": False,
@@ -154,33 +196,20 @@ def firmware_job(request: dict) -> dict:
             }
 
         # Generate a Renode script (.resc) for this build
-        # The script loads the ELF, enables trace logging, runs for a short
-        # virtual time slice, then exits.
-        resc_content = f"""mach create "stm32f4"
-machine LoadPlatformDescription @platforms/cpus/stm32f4.repl
-sysbus LoadELF @{elf_path}
-cpu LogFunctionNames true
-sysbus LogPeripheralAccess timer2 true
-sysbus LogPeripheralAccess nvic true
-sysbus LogPeripheralAccess gpioPortG true
-emulation RunFor "0.05"
-quit
-"""
+        resc_content = _generate_resc_script(elf_path)
         resc_path = workdir_path / "trace.resc"
         resc_path.write_text(resc_content)
 
         # Run Renode with the trace script
         renode_cmd = ["renode", "--disable-xwt", resc_path]
 
-        try:
-            renode_result = subprocess.run(
-                renode_cmd,
-                capture_output=True,
-                text=True,
-                timeout=60,  # 1-minute sim timeout
-                cwd="/opt/renode-1.15.3",
-            )
-        except subprocess.TimeoutExpired:
+        renode_result, renode_timed_out = _run_command(
+            renode_cmd,
+            timeout=60,  # 1-minute sim timeout
+            cwd="/opt/renode-1.15.3",
+        )
+
+        if renode_timed_out:
             return {
                 "build": {"ok": True, "log": build_log},
                 "trace": {"log": "Renode simulation timed out after 60 seconds"},
