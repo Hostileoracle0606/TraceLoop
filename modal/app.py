@@ -115,24 +115,46 @@ def _run_command(
         return None, True
 
 
-def _generate_resc_script(elf_path: Path) -> str:
-    """
-    Generate a Renode .resc script for STM32F4 trace logging.
+# Board configurations for Renode simulation.
+# Each entry maps a Zephyr board target to the Renode platform file,
+# machine name, and peripherals to log for trace analysis.
+BOARD_CONFIGS: dict[str, dict] = {
+    "stm32f4_disco": {
+        "platform_file": "platforms/cpus/stm32f4.repl",
+        "machine_name": "stm32f4",
+        "peripherals_to_log": ["timer2", "nvic", "gpioPortG"],
+    },
+    "nrf52840dk_nrf52840": {
+        "platform_file": "platforms/cpus/nrf52840.repl",
+        "machine_name": "nrf52840",
+        "peripherals_to_log": ["TIMER1", "gpio", "nvic"],
+    },
+    "esp32c3": {
+        "platform_file": "platforms/cpus/esp32c3.repl",
+        "machine_name": "esp32c3",
+        "peripherals_to_log": ["timer_group0", "gpio", "uart0"],
+    },
+}
 
-    NOTE: This is hardcoded for the single-board demo scenario (ADR-0002).
-    If we support other boards, this needs to become board-aware:
-    - Different platform descriptions (stm32f4.repl vs nrf52840.repl)
-    - Different peripheral names to log (timer2 vs TIMER1, etc.)
-    - Different GPIO port names (gpioPortG vs gpioPortD)
-    For now, YAGNI — we only have one scenario.
+
+def _generate_resc_script(elf_path: Path, board_config: dict) -> str:
     """
-    return f"""mach create "stm32f4"
-machine LoadPlatformDescription @platforms/cpus/stm32f4.repl
+    Generate a Renode .resc script for the given board configuration.
+
+    board_config keys:
+        platform_file: path to the Renode .repl platform description
+        machine_name: name for the Renode machine
+        peripherals_to_log: list of peripheral names for LogPeripheralAccess
+    """
+    peripheral_lines = "\n".join(
+        f"sysbus LogPeripheralAccess {p} true"
+        for p in board_config["peripherals_to_log"]
+    )
+    return f"""mach create "{board_config['machine_name']}"
+machine LoadPlatformDescription @{board_config['platform_file']}
 sysbus LoadELF @{elf_path}
 cpu LogFunctionNames true
-sysbus LogPeripheralAccess timer2 true
-sysbus LogPeripheralAccess nvic true
-sysbus LogPeripheralAccess gpioPortG true
+{peripheral_lines}
 emulation RunFor "0.05"
 quit
 """
@@ -174,6 +196,18 @@ def firmware_job(request: dict) -> dict:
 def _firmware_job_impl(request: dict) -> dict:
     files = request["files"]
     board = request["board"]
+
+    # Resolve board config: explicit override in request, or look up from BOARD_CONFIGS
+    board_config = request.get("board_config")
+    if board_config is None:
+        board_config = BOARD_CONFIGS.get(board)
+    if board_config is None:
+        return {
+            "build": {
+                "ok": False,
+                "log": f"Unknown board '{board}'. Known boards: {list(BOARD_CONFIGS.keys())}",
+            }
+        }
 
     with tempfile.TemporaryDirectory() as workdir:
         workdir_path = Path(workdir)
@@ -225,7 +259,7 @@ def _firmware_job_impl(request: dict) -> dict:
             }
 
         # Generate a Renode script (.resc) for this build
-        resc_content = _generate_resc_script(elf_path)
+        resc_content = _generate_resc_script(elf_path, board_config)
         resc_path = workdir_path / "trace.resc"
         resc_path.write_text(resc_content)
 
