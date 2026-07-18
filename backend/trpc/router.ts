@@ -4,6 +4,7 @@ import { tasksRouter } from './routers/tasks';
 import { runsRouter } from './routers/runs';
 import { patchesRouter } from './routers/patches';
 import { agentRouter } from './routers/agent';
+import { boardsRouter } from './routers/boards';
 
 export const appRouter = router({
   projects: projectsRouter,
@@ -11,6 +12,7 @@ export const appRouter = router({
   runs: runsRouter,
   patches: patchesRouter,
   agent: agentRouter,
+  boards: boardsRouter,
 });
 
 // Export type for client-side type inference
