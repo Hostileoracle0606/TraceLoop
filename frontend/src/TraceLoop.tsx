@@ -3,6 +3,7 @@
 import { useMemo, useState, useCallback } from "react";
 import { runData, patch } from "./run";
 import firmwareSource from '../../firmware-zephyr/timer2-wrong-pin/src/main.c?raw';
+import { FSMIntegration } from './components/fsm';
 
 type View =
   | "dashboard"
@@ -17,7 +18,8 @@ type View =
   | "platforms"
   | "tests"
   | "reports"
-  | "settings";
+  | "settings"
+  | "fsm";
 
 type EventId = "e1" | "e2" | "e3" | "e4" | "e5" | "e6";
 
@@ -39,6 +41,7 @@ const events = runData.events as Record<EventId, TraceEventVM>;
 const navItems: { label: string; icon: string; view: View }[] = [
   { label: "Projects", icon: "▦", view: "dashboard" },
   { label: "Agent", icon: "⌁", view: "agent" },
+  { label: "FSM", icon: "⊚", view: "fsm" },
   { label: "Runs", icon: "▶", view: "history" },
   { label: "Platforms", icon: "▰", view: "platforms" },
   { label: "Tests", icon: "✓", view: "tests" },
@@ -61,6 +64,7 @@ const screenTitles: Record<View, string> = {
   tests: "Test scenarios",
   reports: "Evidence reports",
   settings: "Settings & integrations",
+  fsm: "Agent State Machine",
 };
 
 function Badge({
@@ -807,6 +811,79 @@ function Settings() {
   );
 }
 
+function FSMView({ navigate }: { navigate: (view: View) => void }) {
+  const [taskId, setTaskId] = useState<string>("");
+  const [showInput, setShowInput] = useState(true);
+
+  const handleSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (taskId.trim()) {
+      setShowInput(false);
+    }
+  };
+
+  if (showInput) {
+    return (
+      <div className="page">
+        <div className="page-heading">
+          <div>
+            <span className="eyebrow">Agent State Machine</span>
+            <h1>FSM Visualization</h1>
+            <p>Monitor and control the agent's state machine in real-time.</p>
+          </div>
+        </div>
+        <div className="bg-gray-900 rounded-lg p-8 border border-gray-800 max-w-2xl">
+          <h2 className="text-xl font-semibold text-white mb-4">Enter Task ID</h2>
+          <p className="text-gray-400 text-sm mb-6">
+            Enter the ID of a task to visualize its state machine progression.
+          </p>
+          <form onSubmit={handleSubmit} className="space-y-4">
+            <div>
+              <label htmlFor="taskId" className="block text-sm font-medium text-gray-300 mb-2">
+                Task ID
+              </label>
+              <input
+                id="taskId"
+                type="text"
+                value={taskId}
+                onChange={(e) => setTaskId(e.target.value)}
+                placeholder="e.g., 123e4567-e89b-12d3-a456-426614174000"
+                className="w-full px-4 py-3 bg-gray-800 border border-gray-700 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                required
+              />
+            </div>
+            <button
+              type="submit"
+              className="w-full px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg transition-colors"
+            >
+              Load Task State Machine
+            </button>
+          </form>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="page">
+      <div className="page-heading">
+        <div>
+          <span className="eyebrow">Agent State Machine</span>
+          <h1>FSM Visualization</h1>
+          <p>Task: {taskId}</p>
+        </div>
+        <button
+          onClick={() => setShowInput(true)}
+          className="button button-secondary"
+        >
+          Change Task
+        </button>
+      </div>
+      <FSMIntegration taskId={taskId} />
+    </div>
+  );
+}
+
 export default function Home() {
   const [view, setView] = useState<View>("analysis");
   const [navOpen, setNavOpen] = useState(false);
@@ -814,6 +891,7 @@ export default function Home() {
   const activeNav = useMemo(() => {
     if (["analysis", "run", "success", "compare", "history", "patch"].includes(view)) return "history";
     if (view === "create") return "dashboard";
+    if (view === "fsm") return "fsm";
     return view;
   }, [view]);
   const navigate = (next: View) => { setView(next); setNavOpen(false); window.scrollTo({ top: 0, behavior: "smooth" }); };
@@ -846,6 +924,7 @@ export default function Home() {
           {view === "platforms" && <Platforms navigate={navigate} />}
           {(view === "tests" || view === "reports") && <TestsAndReports view={view} navigate={navigate} />}
           {view === "settings" && <Settings />}
+          {view === "fsm" && <FSMView navigate={navigate} />}
         </div>
       </div>
     </div>
