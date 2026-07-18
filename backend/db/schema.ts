@@ -1,4 +1,4 @@
-import { pgTable, uuid, text, timestamp, jsonb, integer, boolean, varchar, index } from 'drizzle-orm/pg-core';
+import { pgTable, uuid, text, timestamp, jsonb, integer, boolean, varchar, index, uniqueIndex } from 'drizzle-orm/pg-core';
 import { relations } from 'drizzle-orm';
 
 // ============================================================================
@@ -35,8 +35,19 @@ export const boards = pgTable('boards', {
   memoryRam: integer('memory_ram').notNull(), // in KB
   platformFile: text('platform_file'), // Renode .repl file path
   peripherals: jsonb('peripherals').$type<string[]>().notNull(), // ['GPIO', 'UART', 'Timers', ...]
+  buildTarget: text('build_target').notNull(), // Zephyr board target (e.g., 'stm32f4_disco')
+  devicetreePath: text('devicetree_path'), // path to the board's .dts file
+  ledMappings: jsonb('led_mappings').$type<Array<{name: string, color: string, gpioPort: string, pin: number}>>(),
+  gpioPorts: jsonb('gpio_ports').$type<string[]>(),
+  timerCount: integer('timer_count'),
+  hasBLE: boolean('has_ble').default(false),
+  hasWiFi: boolean('has_wifi').default(false),
+  renodePlatformDescription: text('renode_platform_description'), // .repl file path in Renode's platform directory
+  status: varchar('status', { length: 16 }).default('active'), // active, deprecated, beta
   createdAt: timestamp('created_at').defaultNow().notNull(),
-});
+}, (table) => ({
+  nameUniqueIdx: uniqueIndex('boards_name_unique_idx').on(table.name),
+}));
 
 export const boardsRelations = relations(boards, ({ many }) => ({
   projects: many(projects),

@@ -1,73 +1,22 @@
 import { getModalEndpoint } from './config';
+import { db } from './db';
+import { boards } from './db/schema';
+import { eq } from 'drizzle-orm';
 
 /**
- * Client for the Modal compute plane that handles firmware build,
- * simulation, and analysis jobs.
+ * Client for the Modal compute plane.
+ * Modal exposes a single `firmware_job` endpoint that handles
+ * build + simulate in one call.
  */
 
-export interface BuildRequest {
+export interface FirmwareJobRequest {
   files: Record<string, string>;
-  boardId: string;
+  board: string; // Zephyr board slug like 'stm32f4_disco', NOT a UUID
 }
 
-export interface BuildResponse {
-  success: boolean;
-  elfPath?: string;
-  log: string;
-  elapsedMs: number;
-}
-
-export interface SimulateRequest {
-  elfPath: string;
-  boardId: string;
-  acceptanceCriteria: Array<{
-    name: string;
-    register: string;
-    expect: string;
-    byTime: number;
-  }>;
-  timeoutMs: number;
-}
-
-export interface SimulateResponse {
-  success: boolean;
-  traceLog: string;
-  elapsedMs: number;
-}
-
-export interface AnalyzeRequest {
-  traceLog: string;
-  acceptanceCriteria: Array<{
-    name: string;
-    register: string;
-    expect: string;
-    byTime: number;
-  }>;
-}
-
-export interface AnalyzeResponse {
-  status: 'passed' | 'failed';
-  rootCause?: {
-    time: number;
-    type: string;
-    source: string;
-    register: string;
-    value: string;
-    detail: string;
-    label: string;
-    lane: string;
-  };
-  chain?: Array<{
-    id: string;
-    label: string;
-    lane: string;
-    taxonomy: string;
-    time: number;
-    register: string;
-    value: string;
-    detail: string;
-  }>;
-  rootCauseText?: string;
+export interface FirmwareJobResult {
+  build: { ok: boolean; log: string };
+  trace?: { log: string }; // only present if build.ok
 }
 
 class ModalClient {
@@ -79,8 +28,8 @@ class ModalClient {
     return endpoint;
   }
 
-  async build(request: BuildRequest): Promise<BuildResponse> {
-    const response = await fetch(`${this.getEndpoint()}/build`, {
+  async firmwareJob(request: FirmwareJobRequest): Promise<FirmwareJobResult> {
+    const response = await fetch(`${this.getEndpoint()}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(request),
@@ -88,42 +37,42 @@ class ModalClient {
 
     if (!response.ok) {
       const text = await response.text();
-      throw new Error(`Build failed (${response.status}): ${text}`);
+      throw new Error(`Firmware job failed (${response.status}): ${text}`);
     }
 
-    return response.json() as Promise<BuildResponse>;
-  }
-
-  async simulate(request: SimulateRequest): Promise<SimulateResponse> {
-    const response = await fetch(`${this.getEndpoint()}/simulate`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request),
-    });
-
-    if (!response.ok) {
-      const text = await response.text();
-      throw new Error(`Simulation failed (${response.status}): ${text}`);
-    }
-
-    return response.json() as Promise<SimulateResponse>;
-  }
-
-  async analyze(request: AnalyzeRequest): Promise<AnalyzeResponse> {
-    const response = await fetch(`${this.getEndpoint()}/analyze`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(request),
-    });
-
-    if (!response.ok) {
-      const text = await response.text();
-      throw new Error(`Analysis failed (${response.status}): ${text}`);
-    }
-
-    return response.json() as Promise<AnalyzeResponse>;
+    return response.json() as Promise<FirmwareJobResult>;
   }
 }
 
 // Singleton client
 export const modalClient = new ModalClient();
+
+// Cache for board slug lookups
+const boardSlugCache = new Map<string, string>();
+
+/**
+ * Resolve a board UUID (or slug) to a Zephyr board slug.
+ * If the input already looks like a slug (contains '_' or no '-'), it is returned as-is.
+ */
+export async function resolveBoardSlug(boardIdOrSlug: string): Promise<string> {
+  // If it's already a slug (no dashes / looks like a Zephyr target), return as-is
+  if (!boardIdOrSlug.includes('-') || boardIdOrSlug.includes('_')) {
+    return boardIdOrSlug;
+  }
+
+  // Check cache
+  const cached = boardSlugCache.get(boardIdOrSlug);
+  if (cached) return cached;
+
+  // Look up in DB
+  const board = await db.query.boards.findFirst({
+    where: eq(boards.id, boardIdOrSlug),
+  });
+
+  if (!board) {
+    throw new Error(`Board not found: ${boardIdOrSlug}`);
+  }
+
+  boardSlugCache.set(boardIdOrSlug, board.buildTarget);
+  return board.buildTarget;
+}

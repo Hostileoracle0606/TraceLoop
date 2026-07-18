@@ -169,25 +169,40 @@ describe('runStatefulAuthoringLoop', () => {
   });
 
   describe('permission profile', () => {
-    it('works with review profile (all actions require approval)', async () => {
+    it('pauses in review mode when patch approval is required', async () => {
       const result = await runStatefulAuthoringLoop(
         { files: { 'src/main.c': mainC }, assertion: greenLedAssertion, board: 'stm32f4_disco' },
         fakeCompute(),
         { maxIterations: 5, profile: 'review' },
       );
 
-      // Should still converge (approval is assumed granted in this implementation)
-      expect(result.finalState).toBe('completed');
-      expect(result.result.status).toBe('passed');
+      // Review mode requires approval for apply-patch — loop should pause
+      expect(result.finalState).toBe('patching');
+      expect(result.auditLog.some(t => t.reason === 'awaiting-approval')).toBe(true);
+      // Should NOT have converged
+      expect(result.result.status).not.toBe('passed');
     });
 
-    it('works with guided profile (checkpoints require approval)', async () => {
+    it('pauses in guided mode when patch approval is required', async () => {
       const result = await runStatefulAuthoringLoop(
         { files: { 'src/main.c': mainC }, assertion: greenLedAssertion, board: 'stm32f4_disco' },
         fakeCompute(),
         { maxIterations: 5, profile: 'guided' },
       );
 
+      // Guided mode requires approval at patch checkpoint
+      expect(result.finalState).toBe('patching');
+      expect(result.auditLog.some(t => t.reason === 'awaiting-approval')).toBe(true);
+    });
+
+    it('converges in autonomous mode (no approval needed)', async () => {
+      const result = await runStatefulAuthoringLoop(
+        { files: { 'src/main.c': mainC }, assertion: greenLedAssertion, board: 'stm32f4_disco' },
+        fakeCompute(),
+        { maxIterations: 5, profile: 'autonomous' },
+      );
+
+      // Autonomous mode auto-allows patches
       expect(result.finalState).toBe('completed');
       expect(result.result.status).toBe('passed');
     });
