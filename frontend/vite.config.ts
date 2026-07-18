@@ -16,5 +16,18 @@ export default defineConfig({
     strictPort: true,
     // allow importing the engine from the repo root (one level above the Vite root)
     fs: { allow: ['..'] },
+    proxy: {
+      // Proxy /trpc/* to backend, stripping the /trpc prefix (standalone adapter serves at root)
+      '/trpc': {
+        target: 'http://localhost:3000',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/trpc/, ''),
+      },
+      // Proxy /api/* to backend for health/metrics endpoints
+      '/api': {
+        target: 'http://localhost:3000',
+        changeOrigin: true,
+      },
+    },
   },
 });
