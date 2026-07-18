@@ -3,6 +3,7 @@ import { eq } from 'drizzle-orm';
 import { router, authenticatedProcedure } from '../context';
 import { tasks, projects, boards } from '../../db/schema';
 import { clarifyIntent, generatePlan, editSource, proposePatchLLM } from '../../llm/functions';
+import { sanitizePath, validatePlanLimits } from '../middleware/validate';
 
 /**
  * Agent tRPC router.
@@ -127,6 +128,13 @@ export const agentRouter = router({
         );
       }
 
+      // Validate plan limits and file paths
+      validatePlanLimits(input.plan);
+      for (let i = 0; i < input.plan.steps.length; i++) {
+        const step = input.plan.steps[i]!;
+        sanitizePath(step.file, `plan.steps[${i}].file`);
+      }
+
       const result = await editSource(input.plan, task.currentFiles ?? {});
 
       // Update task files with the operations
@@ -179,6 +187,9 @@ export const agentRouter = router({
           `Cannot patch: task is in '${task.status}' state, expected 'patching'`
         );
       }
+
+      // Validate root cause source path for traversal
+      sanitizePath(input.rootCause.source, 'rootCause.source');
 
       const patch = await proposePatchLLM(
         input.rootCause,
