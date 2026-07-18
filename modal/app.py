@@ -37,6 +37,10 @@ image = (
         "libssl-dev",
         "libffi-dev",
         "device-tree-compiler",
+        # Zephyr SDK host tool dependencies
+        "bzip2",
+        "dfu-util",
+        "libusb-1.0-0",
     )
     # Install west (Zephyr's meta-tool) and jsonschema (required by west)
     .run_commands("pip install west jsonschema")
@@ -56,10 +60,10 @@ image = (
     # Download and install Zephyr SDK (ARM toolchain for STM32F4)
     .run_commands(
         "cd /tmp && "
-        "wget -q https://github.com/zephyrproject-rtos/sdk-ng/releases/download/v0.17.0/zephyr-sdk-0.17.0_linux-x86_64.tar.xz && "
+        "wget https://github.com/zephyrproject-rtos/sdk-ng/releases/download/v0.17.0/zephyr-sdk-0.17.0_linux-x86_64.tar.xz && "
         "tar xf zephyr-sdk-0.17.0_linux-x86_64.tar.xz -C /opt && "
         "cd /opt/zephyr-sdk-0.17.0 && "
-        "./setup.sh -t arm-zephyr-eabi -h -c"
+        "./setup.sh -t arm-zephyr-eabi -h -c || (echo 'SDK setup failed, trying without -c flag' && ./setup.sh -t arm-zephyr-eabi -h)"
     )
     # Install Renode (portable Linux binary)
     .run_commands(
