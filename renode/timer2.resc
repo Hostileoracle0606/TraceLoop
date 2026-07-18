@@ -1,0 +1,19 @@
+:name: TraceLoop — Timer2 wrong-pin demo
+:description: Runs the buggy STM32F4 firmware and logs the peripheral + function trace.
+
+mach create "stm32f4"
+machine LoadPlatformDescription @platforms/cpus/stm32f4.repl
+
+sysbus LoadELF $ORIGIN/../firmware/timer2-wrong-pin.elf
+
+# Log function entries (resolved from ELF symbols) -> gives us the handler-entry event
+cpu LogFunctionNames true
+
+# Log peripheral register accesses -> gives us timer / NVIC / GPIO-write events
+sysbus LogPeripheralAccess timer2 true
+sysbus LogPeripheralAccess nvic true
+sysbus LogPeripheralAccess gpioPortG true
+
+# Run a short slice of virtual time, then exit
+emulation RunFor "0.01"
+quit

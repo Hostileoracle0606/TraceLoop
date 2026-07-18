@@ -1,0 +1,23 @@
+# Installed dependencies
+node_modules/
+
+# Generated application and firmware builds
+dist/
+build/
+coverage/
+
+# Runtime output. Keep the small parser fixtures used by the test suite.
+*.log
+!src/engine/__fixtures__/*.log
+
+# Compiled firmware. Keep the legacy demo ELF until it has a reproducible
+# build command; renode/timer2.resc loads this exact fixture.
+*.elf
+!firmware/timer2-wrong-pin.elf
+
+# Local configuration and editor state
+.env
+.env.*
+!.env.example
+.DS_Store
+.claude/scheduled_tasks.lock

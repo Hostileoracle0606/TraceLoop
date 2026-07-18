@@ -1,0 +1,17 @@
+{
+  "name": "traceloop",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Causal firmware debugger — explains why a firmware test failed, not just that it did.",
+  "scripts": {
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.1",
+    "typescript": "^5.7.3",
+    "vitest": "^2.1.8"
+  }
+}

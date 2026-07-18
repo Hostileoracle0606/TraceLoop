@@ -1,0 +1,48 @@
+[
+  {
+    "time": 1000,
+    "type": "timer",
+    "source": "TIM2",
+    "register": "TIM2_SR.UIF",
+    "value": "0 → 1",
+    "detail": "TIM2 update event (UIF) observed by Renode",
+    "label": "Timer 2 expired",
+    "lane": "Timer 2"
+  },
+  {
+    "time": 1001,
+    "type": "interrupt",
+    "source": "NVIC",
+    "register": "NVIC_ISPR0[28]",
+    "value": "0 → 1",
+    "detail": "IRQ 28 pending (TIM2 → NVIC)",
+    "label": "IRQ 28 pending",
+    "lane": "IRQ 28"
+  },
+  {
+    "time": 1002,
+    "type": "handler-entry",
+    "source": "timer_isr",
+    "register": "PC",
+    "value": "0x8000440",
+    "detail": "Program counter resolved to timer_isr (0x8000440)",
+    "label": "Entered timer_isr",
+    "lane": "CPU"
+  },
+  {
+    "time": 1004,
+    "type": "gpio-write",
+    "source": "gpio_stm32_port_set_bits_raw (timer_isr)",
+    "register": "GPIOG_ODR[13]",
+    "value": "0 → 1",
+    "detail": "gpio_stm32_port_set_bits_raw (timer_isr) wrote GPIOG_ODR pin 13",
+    "label": "GPIO pin 13 written",
+    "lane": "GPIO pin 13",
+    "effect": {
+      "label": "Orange LED on",
+      "lane": "Orange LED",
+      "register": "LED_ORANGE",
+      "value": "OFF → ON"
+    }
+  }
+]

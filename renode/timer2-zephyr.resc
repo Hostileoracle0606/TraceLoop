@@ -1,0 +1,10 @@
+:name: TraceLoop — Zephyr Timer2 wrong-pin demo
+mach create "stm32f4"
+machine LoadPlatformDescription @platforms/cpus/stm32f4.repl
+sysbus LoadELF $ORIGIN/../firmware-zephyr/build/zephyr/zephyr.elf
+cpu LogFunctionNames true
+sysbus LogPeripheralAccess timer2 true
+sysbus LogPeripheralAccess nvic true
+sysbus LogPeripheralAccess gpioPortG true
+emulation RunFor "0.05"
+quit

@@ -1,0 +1,35 @@
+/*
+ * TraceLoop demo overlay: exposes GPIOG pins 12/13 as named LEDs so the app
+ * can use Zephyr's idiomatic gpio_pin_set_dt() — matching the causal-debugger
+ * dashboard's existing GPIOG_ODR[12]/[13] scenario (green/orange LED).
+ *
+ * Note: the real STM32F4-Discovery's user LEDs are wired to GPIOD, not GPIOG.
+ * We deliberately keep GPIOG here for consistency with the engine, tests, and
+ * dashboard already built around this register family — Renode has no
+ * problem toggling GPIOG regardless of physical board silkscreen.
+ */
+
+&gpiog {
+	status = "okay";
+};
+
+/ {
+	traceloop_leds {
+		compatible = "gpio-leds";
+
+		green_led: led_g12 {
+			gpios = <&gpiog 12 GPIO_ACTIVE_HIGH>;
+			label = "TraceLoop Green (GPIOG12)";
+		};
+
+		orange_led: led_g13 {
+			gpios = <&gpiog 13 GPIO_ACTIVE_HIGH>;
+			label = "TraceLoop Orange (GPIOG13)";
+		};
+	};
+
+	aliases {
+		traceloop-green = &green_led;
+		traceloop-orange = &orange_led;
+	};
+};

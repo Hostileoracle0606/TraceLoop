@@ -1,0 +1,14 @@
+22:48:03.2185 [INFO] timer2: [cpu: 0x800049C] WriteUInt32 to 0x28 (Prescaler), value 0x0
+22:48:03.2185 [INFO] timer2: [cpu: 0x800049E] WriteUInt32 to 0x2C (AutoReload), value 0x3E8
+22:48:03.2185 [INFO] timer2: [cpu: 0x80004A0] WriteUInt32 to 0x14 (EventGeneration), value 0x1
+22:48:03.2185 [INFO] timer2: [cpu: 0x80004A2] WriteUInt32 to 0x10 (Status), value 0x0
+22:48:03.2185 [INFO] timer2: [cpu: 0x80004A4] ReadUInt32 from 0xC (DmaOrInterruptEnable), returned 0x0
+22:48:03.2185 [INFO] timer2: [cpu: 0x80004A8] WriteUInt32 to 0xC (DmaOrInterruptEnable), value 0x1
+22:48:03.2185 [INFO] nvic: [cpu: 0x8000BA6] WriteUInt32 to 0x100 (SetEnable), value 0x10000000
+22:48:03.2185 [INFO] timer2: [cpu: 0x80004B6] ReadUInt32 from 0x0 (Control1), returned 0x0
+22:48:03.2185 [INFO] timer2: [cpu: 0x80004BC] WriteUInt32 to 0x0 (Control1), value 0x1
+22:48:03.2235 [INFO] cpu: Entering function timer_isr (entry) at 0x8000440
+22:48:03.2236 [INFO] timer2: [cpu: 0x8000444] ReadUInt32 from 0x10 (Status), returned 0x1
+22:48:03.2236 [INFO] timer2: [cpu: 0x800044A] WriteUInt32 to 0x10 (Status), value 0x0
+22:48:03.2237 [INFO] cpu: Entering function gpio_stm32_port_set_bits_raw (entry) at 0x8003132
+22:48:03.2237 [INFO] gpioPortG: [cpu: 0x8003138] WriteUInt32 to 0x18 (BitSet), value 0x2000

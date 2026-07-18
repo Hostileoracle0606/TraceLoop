@@ -1,0 +1,13 @@
+19:59:30.1640 [INFO] cpu: Entering function Reset_Handler (entry) at 0x800016C
+19:59:30.1647 [INFO] cpu: Entering function main (entry) at 0x80000B4
+19:59:30.1752 [INFO] gpioPortG: [cpu: 0x80000D2] ReadUInt32 from 0x0 (Mode), returned 0x0
+19:59:30.1754 [INFO] gpioPortG: [cpu: 0x80000DA] WriteUInt32 to 0x0 (Mode), value 0x5000000
+19:59:30.1757 [INFO] timer2: [cpu: 0x80000E0] WriteUInt32 to 0x28 (Prescaler), value 0x0
+19:59:30.1760 [INFO] timer2: [cpu: 0x80000E8] WriteUInt32 to 0x2C (AutoReload), value 0x3E8
+19:59:30.1780 [INFO] timer2: [cpu: 0x80000F4] WriteUInt32 to 0x10 (Status), value 0x0
+19:59:30.1826 [INFO] nvic: [cpu: 0x8000118] WriteUInt32 to 0x100 (SetEnable), value 0x10000000
+19:59:30.1922 [INFO] cpu: Entering function timer_isr (entry) at 0x8000140
+19:59:30.1924 [INFO] timer2: [cpu: 0x8000146] ReadUInt32 from 0x10 (Status), returned 0x1
+19:59:30.1926 [INFO] timer2: [cpu: 0x800014E] WriteUInt32 to 0x10 (Status), value 0x0
+19:59:30.1929 [INFO] gpioPortG: [cpu: 0x8000152] ReadUInt32 from 0x14 (OutputData), returned 0x0
+19:59:30.1930 [INFO] gpioPortG: [cpu: 0x800015A] WriteUInt32 to 0x14 (OutputData), value 0x2000
