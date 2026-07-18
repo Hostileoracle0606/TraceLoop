@@ -4,6 +4,7 @@ import { useMemo, useState, useCallback } from "react";
 import { runData, patch } from "./run";
 import firmwareSource from '../../firmware-zephyr/timer2-wrong-pin/src/main.c?raw';
 import { FSMIntegration } from './components/fsm';
+import { trpc } from './lib/trpc';
 
 type View =
   | "dashboard"
@@ -38,16 +39,17 @@ type TraceEventVM = {
 // views, the event inspector, and the run header all follow.
 const events = runData.events as Record<EventId, TraceEventVM>;
 
-const navItems: { label: string; icon: string; view: View }[] = [
+const navItems: Array<{ label: string; icon: string; view: View } | { label: string; divider: true }> = [
   { label: "Projects", icon: "▦", view: "dashboard" },
   { label: "Agent", icon: "⌁", view: "agent" },
-  { label: "FSM", icon: "⊚", view: "fsm" },
   { label: "Runs", icon: "▶", view: "history" },
+  { label: "Project resources", divider: true },
   { label: "Platforms", icon: "▰", view: "platforms" },
   { label: "Tests", icon: "✓", view: "tests" },
   { label: "Reports", icon: "▤", view: "reports" },
-  { label: "Integrations", icon: "⊞", view: "settings" },
   { label: "Settings", icon: "⚙", view: "settings" },
+  { label: "Advanced", divider: true },
+  { label: "FSM", icon: "⊚", view: "fsm" },
 ];
 
 const screenTitles: Record<View, string> = {
@@ -61,8 +63,8 @@ const screenTitles: Record<View, string> = {
   compare: "Run comparison",
   history: "Run history",
   platforms: "Platform library",
-  tests: "Test scenarios",
-  reports: "Evidence reports",
+  tests: "Acceptance criteria",
+  reports: "Export evidence",
   settings: "Settings & integrations",
   fsm: "Agent State Machine",
 };
@@ -83,12 +85,14 @@ function Button({
   onClick,
   disabled,
   testId,
+  title,
 }: {
   children: React.ReactNode;
   tone?: "primary" | "secondary" | "danger" | "ghost";
   onClick?: () => void;
   disabled?: boolean;
   testId?: string;
+  title?: string;
 }) {
   return (
     <button
@@ -96,6 +100,7 @@ function Button({
       onClick={onClick}
       disabled={disabled}
       data-testid={testId}
+      title={title}
     >
       {children}
     </button>
@@ -626,43 +631,55 @@ function CausalGraph({ selected, select }: { selected: EventId; select: (id: Eve
   );
 }
 
-function FailureAnalysis({ navigate }: { navigate: (view: View) => void }) {
+function FailureAnalysis({ navigate, taskId }: { navigate: (view: View) => void; taskId?: string }) {
   const [selected, setSelected] = useState<EventId>("e4");
   const [debugTab, setDebugTab] = useState<"timeline" | "board" | "graph">("timeline");
+  const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
   const event = events[selected];
+  const { data: patches } = trpc.patches.listByTask.useQuery(
+    { taskId: taskId! },
+    { enabled: !!taskId }
+  ) as { data: Array<{ status: string }> | undefined };
+  const hasProposedPatch = patches && patches.length > 0 && patches.some(p => p.status === 'proposed');
   return (
     <div className="workspace-page analysis-page">
       <div className="run-topbar">
         <div className="run-identity"><Badge tone="red">Failed</Badge><div><strong>{runData.run.id}</strong><small>green_led_should_turn_on</small></div></div>
         <div className="run-meta"><span><small>Board</small>{runData.run.board}</span><span><small>Commit</small><code>{runData.run.commit}</code></span><span><small>Virtual time</small>2.000 ms</span><span><small>Trace events</small>1,284</span></div>
-        <div className="run-actions"><Button onClick={() => navigate("compare")}>⇄ Compare run</Button><Button tone="primary" onClick={() => navigate("run")}>↻ Rerun</Button></div>
+        <div className="run-actions"><Button onClick={() => navigate("compare")}>⇄ Compare run</Button>{hasProposedPatch ? <><Button onClick={() => navigate("run")}>Rerun unchanged</Button><Button tone="primary" onClick={() => navigate("patch")} testId="review-fix">Review proposed fix →</Button></> : <Button tone="primary" onClick={() => navigate("run")}>↻ Rerun</Button>}</div>
       </div>
       <div className="analysis-shell">
         <aside className="trace-sidebar">
           <label className="trace-search"><span>⌕</span><input aria-label="Search trace events" placeholder="Search events" /></label>
           <div className="trace-group open"><button><span>⌄ Test assertions</span><Badge tone="red">1</Badge></button><label className="check-row"><input type="checkbox" defaultChecked /><i className="fail-check">!</i><span>Green LED ON<br /><small>by 2000 µs</small></span></label></div>
-          <div className="trace-group open"><button><span>⌄ Components</span><small>8</small></button>{["Timer 2", "IRQ 28 / NVIC", "CPU core", "GPIO port G", "Green LED", "Orange LED"].map((item, index) => <label className="check-row compact" key={item}><input type="checkbox" defaultChecked /><i className={`component-dot c${index}`} /><span>{item}</span></label>)}</div>
-          <div className="trace-group"><button><span>› Functions</span><small>42</small></button></div>
+          <div className="trace-group open"><button><span>⌄ Implicated components</span><small>6</small></button>{["Timer 2", "IRQ 28 / NVIC", "CPU core", "GPIO port G", "Green LED", "Orange LED"].map((item, index) => <label className="check-row compact" key={item}><input type="checkbox" defaultChecked /><i className={`component-dot c${index}`} /><span>{item}</span></label>)}</div>
+          <div className="trace-group"><button onClick={() => setShowAdvancedFilters(!showAdvancedFilters)}><span>{showAdvancedFilters ? "⌄" : "›"} Advanced filters</span></button></div>
+          {showAdvancedFilters && (<><div className="trace-group"><button><span>› Functions</span><small>42</small></button></div>
           <div className="trace-group"><button><span>› Interrupts</span><small>7</small></button></div>
           <div className="trace-group"><button><span>› Peripherals</span><small>12</small></button></div>
-          <div className="trace-group open"><button><span>⌄ Severity</span></button><div className="severity-row"><Badge tone="red">Failure</Badge><Badge tone="amber">Suspicious</Badge><Badge tone="blue">Info</Badge></div></div>
+          <div className="trace-group open"><button><span>⌄ Severity</span></button><div className="severity-row"><Badge tone="red">Failure</Badge><Badge tone="amber">Suspicious</Badge><Badge tone="blue">Info</Badge></div></div></>)}
           <div className="trace-foot"><span>Showing 78 of 1,284 events</span><button>Reset filters</button></div>
         </aside>
         <main className="debug-workspace">
+          <div className="evidence-panel">
+            <div className="evidence-heading"><div className="evidence-icon">◎</div><div><span className="eyebrow">Grounded in trace evidence</span><h2>{runData.rootCauseText}</h2></div><Badge tone="green">High confidence · 0.99</Badge></div>
+            <p className="explanation">Timer 2 triggered IRQ 28 and entered timer_isr. At main.c:37, the handler wrote GPIO pin 13 instead of the expected pin 12. This changed the orange LED while the green LED remained off at the 2 ms deadline.</p>
+            <div className="evidence-row"><div><strong>Evidence chain</strong><span>{(runData as any).chain?.map((node: any, idx: number) => (<span key={node.id}>{node.label} at {node.time} µs <button onClick={() => setSelected(node.id as EventId)}>[{node.id}]</button>{idx < ((runData as any).chain?.length ?? 0) - 1 && " · "}</span>)) || "Timer 2 expired at 1000 µs [e2] · IRQ 28 pending at 1001 µs [e3] · timer_isr entered at 1002 µs · pin 13 written at 1004 µs [e4] · green LED off at deadline [e6]"}</span></div><div className="evidence-actions"><Button onClick={() => navigate("agent")}>View source</Button><Button onClick={() => navigate("compare")}>Compare passing run</Button><Button tone="primary" onClick={() => navigate("patch")} testId="generate-patch">Generate patch →</Button></div></div>
+          </div>
           <div className="debug-tabs" role="tablist">
             <button className={debugTab === "timeline" ? "active" : ""} onClick={() => setDebugTab("timeline")}><span>⌁</span><div><strong>Timeline</strong><small>WHEN</small></div></button>
             <button className={debugTab === "board" ? "active" : ""} onClick={() => setDebugTab("board")}><span>▰</span><div><strong>Virtual board</strong><small>WHERE</small></div></button>
             <button className={debugTab === "graph" ? "active" : ""} onClick={() => setDebugTab("graph")}><span>⌘</span><div><strong>Causal graph</strong><small>WHY</small></div></button>
           </div>
           <div className="debug-toolbar">
-            <div><button aria-label="Previous event">‹</button><button aria-label="Play trace" className="play">▶</button><button aria-label="Next event">›</button></div>
+            <div><button aria-label="Previous event" disabled>‹</button><button aria-label="Play trace" className="play" disabled>▶</button><button aria-label="Next event" disabled>›</button></div>
             <div className="scrubber"><span>0 µs</span><input aria-label="Trace time" type="range" min="0" max="2000" value={event.time} readOnly /><strong>{event.time} µs</strong><span>2000 µs</span></div>
-            <div><button>−</button><span>100%</span><button>＋</button><button>Fit</button></div>
+            <div><button disabled>−</button><span>100%</span><button disabled>＋</button><button disabled>Fit</button></div>
           </div>
           <div className={`debug-grid active-${debugTab}`}>
-            <Panel eyebrow="WHEN" title="Signal timeline" className="debug-panel timeline-panel" action={<Badge tone="blue">9 lanes</Badge>}><TraceTimeline selected={selected} select={setSelected} /></Panel>
-            <Panel eyebrow="WHERE" title="Virtual board" className="debug-panel board-panel" action={<button className="panel-tool">Isolate component</button>}><BoardDiagram selected={selected} select={setSelected} /></Panel>
-            <Panel eyebrow="WHY" title="Causal graph" className="debug-panel graph-panel" action={<Badge tone="green">Grounded</Badge>}><CausalGraph selected={selected} select={setSelected} /></Panel>
+            {debugTab === "timeline" && <Panel eyebrow="WHEN" title="Signal timeline" className="debug-panel timeline-panel" action={<Badge tone="blue">9 lanes</Badge>}><TraceTimeline selected={selected} select={setSelected} /></Panel>}
+            {debugTab === "board" && <Panel eyebrow="WHERE" title="Virtual board" className="debug-panel board-panel" action={<button className="panel-tool" disabled>Isolate component</button>}><BoardDiagram selected={selected} select={setSelected} /></Panel>}
+            {debugTab === "graph" && <Panel eyebrow="WHY" title="Causal graph" className="debug-panel graph-panel" action={<Badge tone="green">Grounded</Badge>}><CausalGraph selected={selected} select={setSelected} /></Panel>}
           </div>
           <div className="event-inspector">
             <div className={`event-kind ${event.kind}`}>{event.kind === "observed" ? "OBS" : event.kind === "derived" ? "DRV" : "FAIL"}</div>
@@ -671,13 +688,7 @@ function FailureAnalysis({ navigate }: { navigate: (view: View) => void }) {
             <div className="event-field"><small>Source</small><code>{selected === "e4" ? "main.c:37" : selected === "e3" ? "main.c:32" : selected === "e6" ? "green_led.robot:18" : selected === "e1" ? "platform.resc:12" : selected === "e2" ? "NVIC model" : "board state"}</code></div>
             <div className="event-field"><small>Register</small><code>{event.register}</code></div>
             <div className="event-field"><small>Value</small><code>{event.value}</code></div>
-            <div className="event-field"><small>Confidence</small><strong>0.99</strong></div>
-            <button className="event-more">Raw Renode evidence ›</button>
-          </div>
-          <div className="evidence-panel">
-            <div className="evidence-heading"><div className="evidence-icon">◎</div><div><span className="eyebrow">Grounded in trace evidence</span><h2>Root cause: <code>timer_isr</code> wrote GPIO pin 13 instead of GPIO pin 12.</h2></div><Badge tone="green">High confidence · 0.99</Badge></div>
-            <p className="explanation">Timer 2 triggered IRQ 28 and entered <code>timer_isr</code>. At <code>main.c:37</code>, the handler wrote GPIO pin 13 instead of the expected pin 12. This changed the orange LED while the green LED remained off at the 2 ms deadline.</p>
-            <div className="evidence-row"><div><strong>Evidence chain</strong><span>Timer 2 expired at 1000 µs <button onClick={() => setSelected("e2")}>[e2]</button> · IRQ 28 pending at 1001 µs <button onClick={() => setSelected("e3")}>[e3]</button> · <code>timer_isr</code> entered at 1002 µs · pin 13 written at 1004 µs <button onClick={() => setSelected("e4")}>[e4]</button> · green LED off at deadline <button onClick={() => setSelected("e6")}>[e6]</button></span></div><div className="evidence-actions"><Button onClick={() => navigate("agent")}>View source</Button><Button onClick={() => navigate("compare")}>Compare passing run</Button><Button tone="primary" onClick={() => navigate("patch")} testId="generate-patch">Generate patch →</Button></div></div>
+            <button className="event-more" disabled>Raw Renode evidence ›</button>
           </div>
         </main>
       </div>
@@ -774,31 +785,47 @@ function RunHistory({ navigate }: { navigate: (view: View) => void }) {
 }
 
 function Platforms({ navigate }: { navigate: (view: View) => void }) {
-  const [selected, setSelected] = useState("STM32F4 Discovery");
-  const platforms = [
-    { name: "STM32F4 Discovery", mcu: "STM32F407VG", arch: "ARM Cortex-M4F", memory: "1 MB Flash · 192 KB SRAM", pins: "16 GPIO · 4 LEDs", status: "Verified" },
-    { name: "nRF52840 DK", mcu: "nRF52840", arch: "ARM Cortex-M4F", memory: "1 MB Flash · 256 KB RAM", pins: "48 GPIO · 4 LEDs", status: "Verified" },
-    { name: "ESP32-C3 DevKit", mcu: "ESP32-C3", arch: "RISC-V RV32IMC", memory: "4 MB Flash · 400 KB SRAM", pins: "22 GPIO · 1 LED", status: "Beta" },
-  ];
-  const active = platforms.find((item) => item.name === selected) ?? platforms[0];
+  const [selected, setSelected] = useState<string | null>(null);
+  const { data: boards, isLoading, error } = trpc.boards.list.useQuery() as {
+    data: Array<{ id: string; name: string; mcu: string; architecture: string; memoryFlash: number; memoryRam: number; peripherals: string[]; status: string }> | undefined;
+    isLoading: boolean;
+    error: any;
+  };
+
+  const platforms = boards || [];
+
+  const active = platforms.find((item: any) => item.id === selected) ?? platforms[0];
+  const formatMemory = (flash: number, ram: number) => `${(flash / 1024).toFixed(0)} MB Flash · ${(ram / 1024).toFixed(0)} ${ram >= 1024 ? 'MB' : 'KB'} ${ram >= 1024 ? 'RAM' : 'SRAM'}`;
+  const formatPins = (peripherals: string[]) => `${peripherals.includes('GPIO') ? '16' : '0'} GPIO · ${peripherals.includes('GPIO') ? '4' : '0'} LEDs`;
+  
   return (
     <div className="page platforms-page">
-      <div className="page-heading"><div><span className="eyebrow">Renode compatible</span><h1>Platform library</h1><p>Virtual hardware profiles available to the TraceLoop agent.</p></div><Button onClick={() => navigate("create")}>⇧ Import custom Renode platform</Button></div>
-      <div className="platform-layout">
-        <div className="platform-list"><label className="search-field"><span>⌕</span><input aria-label="Search platform library" placeholder="Search board or MCU…" /></label>{platforms.map((item) => <button className={`platform-card ${selected === item.name ? "selected" : ""}`} key={item.name} onClick={() => setSelected(item.name)}><div className="platform-thumb"><span>MCU</span><i /><i /><i /></div><div><div className="platform-name"><strong>{item.name}</strong><Badge tone={item.status === "Verified" ? "green" : "amber"}>{item.status}</Badge></div><span>{item.mcu} · {item.arch}</span><small>{item.memory}</small><small>{item.pins}</small></div></button>)}</div>
+      <div className="page-heading"><div><span className="eyebrow">Renode compatible</span><h1>Platform library</h1><p>Virtual hardware profiles available to the TraceLoop agent.</p></div><Button onClick={() => navigate("create")} disabled>⇧ Import custom Renode platform</Button></div>
+      {isLoading && <div className="panel"><p>Loading boards...</p></div>}
+      {error && <div className="panel"><p className="text-red">Error loading boards: {String(error)}</p></div>}
+      {!isLoading && !error && (<div className="platform-layout">
+        <div className="platform-list"><label className="search-field"><span>⌕</span><input aria-label="Search platform library" placeholder="Search board or MCU…" /></label>{platforms.map((item: any) => <button className={`platform-card ${selected === item.id ? "selected" : ""}`} key={item.id} onClick={() => setSelected(item.id)}><div className="platform-thumb"><span>MCU</span><i /><i /><i /></div><div><div className="platform-name"><strong>{item.name}</strong><Badge tone={item.status === "active" ? "green" : item.status === "beta" ? "amber" : "neutral"}>{item.status === "active" ? "Available" : item.status === "beta" ? "Beta" : "Deprecated"}</Badge></div><span>{item.mcu} · {item.architecture}</span><small>{formatMemory(item.memoryFlash, item.memoryRam)}</small><small>{formatPins(item.peripherals)}</small></div></button>)}</div>
         <Panel title={active.name} eyebrow="Platform details" className="platform-detail" action={<Button tone="primary" onClick={() => navigate("create")}>Use this board</Button>}>
-          <div className="platform-hero-board"><div className="platform-chip"><small>{active.arch}</small><strong>{active.mcu}</strong><span>Renode ready</span></div><span className="diagram-block a">TIM2</span><span className="diagram-block b">NVIC</span><span className="diagram-block c">GPIO</span><span className="diagram-block d">UART</span><i className="platform-pins p1" /><i className="platform-pins p2" /></div>
-          <div className="spec-grid"><div><span>Architecture</span><strong>{active.arch}</strong></div><div><span>Memory</span><strong>{active.memory}</strong></div><div><span>GPIO & LEDs</span><strong>{active.pins}</strong></div><div><span>Compatibility</span><strong className="text-green">Trace + causal analysis</strong></div></div>
-          <div className="detail-columns"><div><h3>Supported peripherals</h3><div className="cap-list large">{["GPIO", "UART 2/3", "TIM 1–14", "SPI 1–3", "I²C 1–3", "ADC", "DMA", "NVIC"].map((cap) => <span key={cap}>{cap}</span>)}</div><h3>Available outputs</h3><div className="led-list"><span><i className="led-dot green" /> LD4 Green · PG12</span><span><i className="led-dot orange" /> LD3 Orange · PG13</span><span><i className="led-dot red" /> LD5 Red · PG14</span><span><i className="led-dot blue" /> LD6 Blue · PG15</span></div></div><div><h3>Platform files</h3><button className="file-pill"><span>R</span><div><strong>stm32f4_discovery.repl</strong><small>Board platform definition</small></div><code>12.4 KB</code></button><button className="file-pill"><span>R</span><div><strong>stm32f4_discovery.resc</strong><small>Initialization script</small></div><code>3.1 KB</code></button><h3>Example firmware</h3><button className="sample-row"><span>▤</span><div><strong>Timer-driven LED</strong><small>Zephyr · C · 4 tests</small></div><b>›</b></button></div></div>
+          <div className="platform-hero-board"><div className="platform-chip"><small>{active.architecture}</small><strong>{active.mcu}</strong><span>Renode ready</span></div><span className="diagram-block a">TIM2</span><span className="diagram-block b">NVIC</span><span className="diagram-block c">GPIO</span><span className="diagram-block d">UART</span><i className="platform-pins p1" /><i className="platform-pins p2" /></div>
+          <div className="spec-grid"><div><span>Architecture</span><strong>{active.architecture}</strong></div><div><span>Memory</span><strong>{formatMemory(active.memoryFlash, active.memoryRam)}</strong></div><div><span>GPIO & LEDs</span><strong>{formatPins(active.peripherals)}</strong></div><div><span>Compatibility</span><strong className="text-green">Trace + causal analysis</strong></div></div>
+          <div className="detail-columns"><div><h3>Supported peripherals</h3><div className="cap-list large">{active?.peripherals?.map((cap: string) => <span key={cap}>{cap}</span>)}</div><h3>Available outputs</h3><div className="led-list"><span><i className="led-dot green" /> LD4 Green · PG12</span><span><i className="led-dot orange" /> LD3 Orange · PG13</span><span><i className="led-dot red" /> LD5 Red · PG14</span><span><i className="led-dot blue" /> LD6 Blue · PG15</span></div></div><div><h3>Platform files</h3><button className="file-pill"><span>R</span><div><strong>stm32f4_discovery.repl</strong><small>Board platform definition</small></div><code>12.4 KB</code></button><button className="file-pill"><span>R</span><div><strong>stm32f4_discovery.resc</strong><small>Initialization script</small></div><code>3.1 KB</code></button><h3>Example firmware</h3><button className="sample-row"><span>▤</span><div><strong>Timer-driven LED</strong><small>Zephyr · C · 4 tests</small></div><b>›</b></button></div></div>
         </Panel>
-      </div>
+      </div>)}
     </div>
   );
 }
 
-function TestsAndReports({ view, navigate }: { view: "tests" | "reports"; navigate: (view: View) => void }) {
-  const tests = [["green_led_should_turn_on", "Timer LED Controller", "Failed", "GPIO pin 12 = 1 by 2000 µs"], ["timer2_irq_fires", "Timer LED Controller", "Passed", "IRQ 28 pending by 1100 µs"], ["uart_frame_forwarded", "UART Sensor Gateway", "Passed", "Frame echoed within 8 ms"], ["overcurrent_latches_pwm", "Motor Safety Controller", "Running", "PWM disabled when current > 4.2 A"]];
-  return <div className="page simple-page"><div className="page-heading"><div><span className="eyebrow">{view === "tests" ? "Scenario library" : "Shareable evidence"}</span><h1>{view === "tests" ? "Test scenarios" : "Evidence reports"}</h1><p>{view === "tests" ? "Reusable hardware inputs and assertions for Renode runs." : "Causal findings, run comparisons, and sign-off artifacts."}</p></div><Button tone="primary" onClick={() => navigate("create")}>＋ {view === "tests" ? "New scenario" : "Generate report"}</Button></div><div className="simple-grid">{(view === "tests" ? tests : tests.slice(0, 3).map((item, index) => [`Trace report · ${item[0]}`, `RUN-${1042 - index}`, index === 0 ? "Draft" : "Ready", index === 0 ? "6 cited events · root cause" : "Passing run · evidence bundle"])).map((item) => <button className="simple-card" key={item[0]} onClick={() => navigate(item[2] === "Failed" || item[2] === "Draft" ? "analysis" : "success")}><div><Badge tone={item[2] === "Failed" ? "red" : item[2] === "Running" || item[2] === "Draft" ? "amber" : "green"}>{item[2]}</Badge><span className="card-menu">•••</span></div><strong>{item[0]}</strong><span>{item[1]}</span><p>{item[3]}</p><small>Updated today · Open →</small></button>)}</div></div>;
+function TestsAndReports({ view, navigate, taskId }: { view: "tests" | "reports"; navigate: (view: View) => void; taskId?: string }) {
+  const { data: task } = trpc.tasks.get.useQuery(
+    { id: taskId! },
+    { enabled: !!taskId }
+  ) as { data: { acceptanceCriteria: Array<{ name: string; register: string; expect: string; byTime: number }> } | undefined };
+
+  if (view === "tests") {
+    return <div className="page simple-page"><div className="page-heading"><div><span className="eyebrow">Project criteria</span><h1>Acceptance criteria</h1><p>{task ? "Agent-generated and user-approved success conditions for this project." : "Acceptance criteria are defined when you create a project."}</p></div>{task && <Button tone="primary" onClick={() => navigate("create")}>＋ Add criterion</Button>}</div>{task ? (<div className="simple-grid">{task.acceptanceCriteria.map((criterion: any) => <div className="simple-card" key={criterion.name}><div><Badge tone="neutral">Criterion</Badge></div><strong>{criterion.name}</strong><p>{criterion.register} = {criterion.expect} by {criterion.byTime} µs</p></div>)}</div>) : (<Panel><p>No active project. Create a project to define acceptance criteria.</p></Panel>)}</div>;
+  }
+
+  return <div className="page simple-page"><div className="page-heading"><div><span className="eyebrow">Run artifacts</span><h1>Export evidence</h1><p>Export evidence is available on each run's detail page.</p></div></div><Panel><p>Navigate to a specific run to export its evidence bundle (trace, root cause, diff, and sign-off artifacts).</p></Panel></div>;
 }
 
 function Settings() {
@@ -811,18 +838,8 @@ function Settings() {
   );
 }
 
-function FSMView({ navigate }: { navigate: (view: View) => void }) {
-  const [taskId, setTaskId] = useState<string>("");
-  const [showInput, setShowInput] = useState(true);
-
-  const handleSubmit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (taskId.trim()) {
-      setShowInput(false);
-    }
-  };
-
-  if (showInput) {
+function FSMView({ navigate, taskId }: { navigate: (view: View) => void; taskId?: string }) {
+  if (!taskId) {
     return (
       <div className="page">
         <div className="page-heading">
@@ -832,34 +849,9 @@ function FSMView({ navigate }: { navigate: (view: View) => void }) {
             <p>Monitor and control the agent's state machine in real-time.</p>
           </div>
         </div>
-        <div className="bg-gray-900 rounded-lg p-8 border border-gray-800 max-w-2xl">
-          <h2 className="text-xl font-semibold text-white mb-4">Enter Task ID</h2>
-          <p className="text-gray-400 text-sm mb-6">
-            Enter the ID of a task to visualize its state machine progression.
-          </p>
-          <form onSubmit={handleSubmit} className="space-y-4">
-            <div>
-              <label htmlFor="taskId" className="block text-sm font-medium text-gray-300 mb-2">
-                Task ID
-              </label>
-              <input
-                id="taskId"
-                type="text"
-                value={taskId}
-                onChange={(e) => setTaskId(e.target.value)}
-                placeholder="e.g., 123e4567-e89b-12d3-a456-426614174000"
-                className="w-full px-4 py-3 bg-gray-800 border border-gray-700 rounded-lg text-white placeholder-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                required
-              />
-            </div>
-            <button
-              type="submit"
-              className="w-full px-6 py-3 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg transition-colors"
-            >
-              Load Task State Machine
-            </button>
-          </form>
-        </div>
+        <Panel>
+          <p>No active task. Create a project to monitor the agent's state machine.</p>
+        </Panel>
       </div>
     );
   }
@@ -870,14 +862,8 @@ function FSMView({ navigate }: { navigate: (view: View) => void }) {
         <div>
           <span className="eyebrow">Agent State Machine</span>
           <h1>FSM Visualization</h1>
-          <p>Task: {taskId}</p>
+          <p>Monitoring task {taskId}</p>
         </div>
-        <button
-          onClick={() => setShowInput(true)}
-          className="button button-secondary"
-        >
-          Change Task
-        </button>
       </div>
       <FSMIntegration taskId={taskId} />
     </div>
@@ -900,8 +886,8 @@ export default function Home() {
     <div className="app-shell">
       <aside className={`sidebar ${navOpen ? "open" : ""}`}>
         <div className="sidebar-brand"><Logo /><button className="mobile-close" onClick={() => setNavOpen(false)}>×</button></div>
-        <nav>{navItems.slice(0, 6).map((item) => <button key={item.label} className={activeNav === item.view ? "active" : ""} onClick={() => navigate(item.view)} data-testid={`nav-${item.view}`}><span>{item.icon}</span><strong>{item.label}</strong>{item.label === "Runs" && <small>3</small>}</button>)}</nav>
-        <div className="sidebar-bottom"><nav>{navItems.slice(6).map((item) => <button key={item.label} className={activeNav === item.view ? "active" : ""} onClick={() => navigate(item.view)}><span>{item.icon}</span><strong>{item.label}</strong></button>)}</nav><div className="renode-status"><i /><div><strong>Renode connected</strong><small>v1.15.3 · local</small></div></div></div>
+        <nav>{navItems.map((item) => 'divider' in item ? <div key={item.label} className="nav-divider"><span>{item.label}</span></div> : <button key={item.label} className={activeNav === item.view ? "active" : ""} onClick={() => navigate(item.view)} data-testid={`nav-${item.view}`}><span>{item.icon}</span><strong>{item.label}</strong>{item.label === "Runs" && <small>3</small>}</button>)}</nav>
+        <div className="sidebar-bottom"><div className="renode-status"><i /><div><strong>Renode connected</strong><small>v1.15.3 · local</small></div></div></div>
       </aside>
       {navOpen && <button className="nav-backdrop" aria-label="Close navigation" onClick={() => setNavOpen(false)} />}
       <div className="app-main">
@@ -916,15 +902,15 @@ export default function Home() {
           {view === "create" && <CreateProject navigate={navigate} />}
           {view === "agent" && <AgentWorkspace navigate={navigate} />}
           {view === "run" && <RunProgress navigate={navigate} />}
-          {view === "analysis" && <FailureAnalysis navigate={navigate} />}
+          {view === "analysis" && <FailureAnalysis navigate={navigate} taskId={undefined} />}
           {view === "patch" && <PatchReview navigate={navigate} />}
           {view === "success" && <Success navigate={navigate} />}
           {view === "compare" && <RunComparison navigate={navigate} />}
           {view === "history" && <RunHistory navigate={navigate} />}
           {view === "platforms" && <Platforms navigate={navigate} />}
-          {(view === "tests" || view === "reports") && <TestsAndReports view={view} navigate={navigate} />}
+          {(view === "tests" || view === "reports") && <TestsAndReports view={view} navigate={navigate} taskId={undefined} />}
           {view === "settings" && <Settings />}
-          {view === "fsm" && <FSMView navigate={navigate} />}
+          {view === "fsm" && <FSMView navigate={navigate} taskId={undefined} />}
         </div>
       </div>
     </div>
