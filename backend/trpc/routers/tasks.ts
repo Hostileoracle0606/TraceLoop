@@ -1,8 +1,9 @@
 import { z } from 'zod';
 import { eq, desc, and } from 'drizzle-orm';
 import { router, authenticatedProcedure } from '../context';
-import { tasks, projects, runs, activityLogs, type TaskStatus, type PermissionProfile } from '../../db/schema';
+import { tasks, projects, runs, boards, activityLogs, type TaskStatus, type PermissionProfile } from '../../db/schema';
 import { canTransition, type AgentState } from '../../../src/engine/agent-state';
+import { inngest, Events, type TaskRunEventData } from '../../inngest/client';
 
 // Zod schemas for task data
 const acceptanceCriteriaSchema = z.array(z.object({
@@ -263,6 +264,82 @@ export const tasksRouter = router({
         where: eq(activityLogs.taskId, input.taskId),
         orderBy: [activityLogs.createdAt],
       });
+    }),
+
+  // Execute the build-simulate-analyze pipeline for a task
+  execute: authenticatedProcedure
+    .input(z.object({ taskId: z.string().uuid() }))
+    .mutation(async ({ ctx, input }) => {
+      const task = await ctx.db.query.tasks.findFirst({
+        where: eq(tasks.id, input.taskId),
+      });
+
+      if (!task) throw new Error('Task not found');
+
+      // Ownership check
+      const project = await ctx.db.query.projects.findFirst({
+        where: eq(projects.id, task.projectId),
+      });
+      if (!project || project.userId !== ctx.user.id) {
+        throw new Error('Access denied');
+      }
+
+      // Task must have files and be in a state that allows execution
+      if (!task.currentFiles || Object.keys(task.currentFiles).length === 0) {
+        throw new Error('Task has no source files to build');
+      }
+
+      if (!project.boardId) {
+        throw new Error('Project has no board assigned');
+      }
+
+      // Create a new run
+      const [run] = await ctx.db
+        .insert(runs)
+        .values({
+          taskId: task.id,
+          iteration: task.iteration,
+          status: 'pending',
+          buildStartedAt: new Date(),
+        })
+        .returning();
+
+      if (!run) throw new Error('Failed to create run');
+
+      // Transition task to building state
+      await ctx.db
+        .update(tasks)
+        .set({ status: 'building', updatedAt: new Date() })
+        .where(eq(tasks.id, task.id));
+
+      // Log activity
+      await ctx.db.insert(activityLogs).values({
+        taskId: task.id,
+        fromState: task.status,
+        toState: 'building',
+        reason: 'execution-requested',
+        actor: 'system',
+        iteration: task.iteration,
+      });
+
+      // Send Inngest event to trigger the pipeline
+      const eventData: TaskRunEventData = {
+        taskId: task.id,
+        runId: run.id,
+        userId: ctx.user.id,
+        projectId: task.projectId,
+        iteration: task.iteration,
+        files: task.currentFiles,
+        boardId: project.boardId,
+        acceptanceCriteria: task.acceptanceCriteria,
+      };
+
+      await inngest.send({
+        name: Events.TASK_RUN_REQUESTED,
+        data: eventData,
+      });
+
+      return { runId: run.id, taskId: task.id };
     }),
 
   // Stop/cancel a task

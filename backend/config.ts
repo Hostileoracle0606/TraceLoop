@@ -13,6 +13,10 @@ const envSchema = z.object({
   // Modal compute plane
   MODAL_ENDPOINT: z.string().url().optional(),
 
+  // Inngest (durable job execution)
+  INNGEST_EVENT_KEY: z.string().min(1).optional(),
+  INNGEST_BASE_URL: z.string().url().optional(),
+
   // Server
   PORT: z.coerce.number().default(3000),
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
@@ -51,6 +55,14 @@ export function getDatabaseUrl(): string {
 
 export function getModalEndpoint(): string | undefined {
   return getEnv().MODAL_ENDPOINT;
+}
+
+export function getInngestConfig(): { eventKey?: string; baseUrl?: string } {
+  const e = getEnv();
+  return {
+    eventKey: e.INNGEST_EVENT_KEY,
+    baseUrl: e.INNGEST_BASE_URL,
+  };
 }
 
 export function getPort(): number {
