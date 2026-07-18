@@ -1,0 +1,321 @@
+import { z } from 'zod';
+import { eq, desc, and } from 'drizzle-orm';
+import { router, authenticatedProcedure } from '../context';
+import { tasks, projects, runs, activityLogs, type TaskStatus, type PermissionProfile } from '../../db/schema';
+import { canTransition, type AgentState } from '../../../src/engine/agent-state';
+
+// Zod schemas for task data
+const acceptanceCriteriaSchema = z.array(z.object({
+  name: z.string(),
+  register: z.string(),
+  expect: z.string(),
+  byTime: z.number(),
+}));
+
+const taskStatusSchema = z.enum([
+  'clarification-needed',
+  'planning',
+  'editing',
+  'building',
+  'simulating',
+  'analyzing',
+  'patching',
+  'rerunning',
+  'completed',
+  'blocked',
+  'stopped',
+]);
+
+const permissionProfileSchema = z.enum(['review', 'guided', 'autonomous']);
+
+export const tasksRouter = router({
+  // List tasks for a project
+  listByProject: authenticatedProcedure
+    .input(z.object({ projectId: z.string().uuid() }))
+    .query(async ({ ctx, input }) => {
+      // Verify project ownership
+      const project = await ctx.db.query.projects.findFirst({
+        where: eq(projects.id, input.projectId),
+      });
+
+      if (!project || project.userId !== ctx.user.id) {
+        throw new Error('Access denied');
+      }
+
+      return ctx.db.query.tasks.findMany({
+        where: eq(tasks.projectId, input.projectId),
+        orderBy: [desc(tasks.createdAt)],
+      });
+    }),
+
+  // Get a single task
+  get: authenticatedProcedure
+    .input(z.object({ id: z.string().uuid() }))
+    .query(async ({ ctx, input }) => {
+      const task = await ctx.db.query.tasks.findFirst({
+        where: eq(tasks.id, input.id),
+        with: {
+          runs: {
+            orderBy: [desc(runs.iteration)],
+          },
+        },
+      });
+
+      if (!task) {
+        throw new Error('Task not found');
+      }
+
+      // Ownership check via project
+      const project = await ctx.db.query.projects.findFirst({
+        where: eq(projects.id, task.projectId),
+      });
+
+      if (!project || project.userId !== ctx.user.id) {
+        throw new Error('Access denied');
+      }
+
+      return task;
+    }),
+
+  // Create a new task (starts the authoring loop)
+  create: authenticatedProcedure
+    .input(z.object({
+      projectId: z.string().uuid(),
+      intent: z.string().min(1),
+      acceptanceCriteria: acceptanceCriteriaSchema,
+      permissionProfile: permissionProfileSchema.default('guided'),
+      maxIterations: z.number().int().min(1).max(20).default(5),
+      maxTimeMs: z.number().int().min(60000).max(3600000).default(1800000),
+      maxCostUsd: z.number().int().min(100).max(10000).default(500),
+      initialFiles: z.record(z.string()).optional(),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      // Verify project ownership
+      const project = await ctx.db.query.projects.findFirst({
+        where: eq(projects.id, input.projectId),
+      });
+
+      if (!project || project.userId !== ctx.user.id) {
+        throw new Error('Access denied');
+      }
+
+      // Create the task
+      const [task] = await ctx.db
+        .insert(tasks)
+        .values({
+          projectId: input.projectId,
+          userId: ctx.user.id,
+          intent: input.intent,
+          acceptanceCriteria: input.acceptanceCriteria,
+          permissionProfile: input.permissionProfile,
+          maxIterations: input.maxIterations,
+          maxTimeMs: input.maxTimeMs,
+          maxCostUsd: input.maxCostUsd,
+          currentFiles: input.initialFiles,
+          status: 'planning',
+          iteration: 0,
+          startedAt: new Date(),
+        })
+        .returning();
+
+      if (!task) {
+        throw new Error('Failed to create task');
+      }
+
+      // Record initial activity log
+      await ctx.db.insert(activityLogs).values({
+        taskId: task.id,
+        fromState: null,
+        toState: 'planning',
+        reason: 'intent-received',
+        actor: 'user',
+        userId: ctx.user.id,
+        iteration: 0,
+        metadata: { intent: input.intent },
+      });
+
+      return task;
+    }),
+
+  // Transition task state (explicit FSM control)
+  transition: authenticatedProcedure
+    .input(z.object({
+      taskId: z.string().uuid(),
+      toState: taskStatusSchema,
+      reason: z.string(),
+      files: z.record(z.string()).optional(),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      const task = await ctx.db.query.tasks.findFirst({
+        where: eq(tasks.id, input.taskId),
+      });
+
+      if (!task) {
+        throw new Error('Task not found');
+      }
+
+      // Ownership check
+      const project = await ctx.db.query.projects.findFirst({
+        where: eq(projects.id, task.projectId),
+      });
+
+      if (!project || project.userId !== ctx.user.id) {
+        throw new Error('Access denied');
+      }
+
+      // Validate state transition using the FSM
+      const fromState = task.status as AgentState;
+      const toState = input.toState as AgentState;
+
+      if (!canTransition(fromState, toState)) {
+        throw new Error(`Invalid state transition: ${fromState} → ${toState}`);
+      }
+
+      // Perform the transition
+      const updateData: Record<string, unknown> = {
+        status: toState,
+        updatedAt: new Date(),
+      };
+
+      if (toState === 'completed' || toState === 'stopped') {
+        updateData.completedAt = new Date();
+      }
+
+      if (input.files) {
+        updateData.currentFiles = input.files;
+      }
+
+      const [updatedTask] = await ctx.db
+        .update(tasks)
+        .set(updateData)
+        .where(eq(tasks.id, input.taskId))
+        .returning();
+
+      // Record activity log
+      await ctx.db.insert(activityLogs).values({
+        taskId: input.taskId,
+        fromState: fromState,
+        toState: toState,
+        reason: input.reason,
+        actor: 'user',
+        userId: ctx.user.id,
+        iteration: task.iteration,
+      });
+
+      return updatedTask;
+    }),
+
+  // Increment iteration counter
+  incrementIteration: authenticatedProcedure
+    .input(z.object({ taskId: z.string().uuid() }))
+    .mutation(async ({ ctx, input }) => {
+      const task = await ctx.db.query.tasks.findFirst({
+        where: eq(tasks.id, input.taskId),
+      });
+
+      if (!task) {
+        throw new Error('Task not found');
+      }
+
+      // Ownership check
+      const project = await ctx.db.query.projects.findFirst({
+        where: eq(projects.id, task.projectId),
+      });
+
+      if (!project || project.userId !== ctx.user.id) {
+        throw new Error('Access denied');
+      }
+
+      const [updatedTask] = await ctx.db
+        .update(tasks)
+        .set({
+          iteration: task.iteration + 1,
+          updatedAt: new Date(),
+        })
+        .where(eq(tasks.id, input.taskId))
+        .returning();
+
+      return updatedTask;
+    }),
+
+  // Get activity log for a task
+  getActivityLog: authenticatedProcedure
+    .input(z.object({ taskId: z.string().uuid() }))
+    .query(async ({ ctx, input }) => {
+      const task = await ctx.db.query.tasks.findFirst({
+        where: eq(tasks.id, input.taskId),
+      });
+
+      if (!task) {
+        throw new Error('Task not found');
+      }
+
+      // Ownership check
+      const project = await ctx.db.query.projects.findFirst({
+        where: eq(projects.id, task.projectId),
+      });
+
+      if (!project || project.userId !== ctx.user.id) {
+        throw new Error('Access denied');
+      }
+
+      return ctx.db.query.activityLogs.findMany({
+        where: eq(activityLogs.taskId, input.taskId),
+        orderBy: [activityLogs.createdAt],
+      });
+    }),
+
+  // Stop/cancel a task
+  stop: authenticatedProcedure
+    .input(z.object({ 
+      taskId: z.string().uuid(),
+      reason: z.string().optional(),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      const task = await ctx.db.query.tasks.findFirst({
+        where: eq(tasks.id, input.taskId),
+      });
+
+      if (!task) {
+        throw new Error('Task not found');
+      }
+
+      // Ownership check
+      const project = await ctx.db.query.projects.findFirst({
+        where: eq(projects.id, task.projectId),
+      });
+
+      if (!project || project.userId !== ctx.user.id) {
+        throw new Error('Access denied');
+      }
+
+      // Can only stop non-terminal tasks
+      if (task.status === 'completed' || task.status === 'stopped') {
+        throw new Error(`Cannot stop task in ${task.status} state`);
+      }
+
+      const [updatedTask] = await ctx.db
+        .update(tasks)
+        .set({
+          status: 'stopped',
+          completedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(eq(tasks.id, input.taskId))
+        .returning();
+
+      // Record activity log
+      await ctx.db.insert(activityLogs).values({
+        taskId: input.taskId,
+        fromState: task.status,
+        toState: 'stopped',
+        reason: 'user-cancelled',
+        actor: 'user',
+        userId: ctx.user.id,
+        iteration: task.iteration,
+        metadata: { reason: input.reason },
+      });
+
+      return updatedTask;
+    }),
+});

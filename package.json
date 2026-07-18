@@ -5,13 +5,28 @@
   "type": "module",
   "description": "Causal firmware debugger — explains why a firmware test failed, not just that it did.",
   "scripts": {
-    "test": "vitest run",
-    "test:watch": "vitest",
-    "typecheck": "tsc --noEmit"
+    "test": "vitest run src/",
+    "test:watch": "vitest src/",
+    "typecheck": "tsc --noEmit",
+    "backend:dev": "tsx watch backend/trpc/server.ts",
+    "backend:start": "tsx backend/trpc/server.ts",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate",
+    "db:push": "drizzle-kit push",
+    "db:studio": "drizzle-kit studio"
   },
   "devDependencies": {
-    "@types/node": "^26.1.1",
+    "@types/node": "^22.20.1",
+    "drizzle-kit": "^0.30.6",
+    "tsx": "^4.23.1",
     "typescript": "^5.7.3",
     "vitest": "^2.1.8"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.110.7",
+    "@trpc/server": "^11.18.0",
+    "drizzle-orm": "^0.38.4",
+    "postgres": "^3.4.9",
+    "zod": "^3.25.76"
   }
 }

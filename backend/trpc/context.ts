@@ -1,0 +1,75 @@
+import { initTRPC, TRPCError } from '@trpc/server';
+import { db } from '../db';
+import { getUserFromJwt, type SupabaseUser } from '../supabase';
+
+// Context type
+export type Context = {
+  db: typeof db;
+  user: SupabaseUser | null;
+};
+
+// Context creation function
+export async function createContext(opts: { req: { headers: Record<string, string | string[] | undefined> } }): Promise<Context> {
+  // Extract JWT from Authorization header
+  const authHeader = opts.req.headers.authorization;
+  const jwt = typeof authHeader === 'string' ? authHeader.replace('Bearer ', '') : null;
+  
+  // Get user from JWT (if present)
+  const user = jwt ? await getUserFromJwt(jwt) : null;
+  
+  return {
+    db,
+    user,
+  };
+}
+
+// Initialize tRPC
+const t = initTRPC.context<Context>().create();
+
+// Base router and procedure
+export const router = t.router;
+export const procedure = t.procedure;
+
+// Authenticated procedure (requires user)
+export const authenticatedProcedure = t.procedure.use(async ({ ctx, next }) => {
+  if (!ctx.user) {
+    throw new TRPCError({
+      code: 'UNAUTHORIZED',
+      message: 'You must be logged in to perform this action',
+    });
+  }
+  return next({ ctx: { ...ctx, user: ctx.user } });
+});
+
+// Ownership check middleware factory
+export function requireOwnership<T extends { userId: string }>(
+  getResource: (id: string, db: Context['db']) => Promise<T | null>,
+  idParam: string = 'id'
+) {
+  return authenticatedProcedure.use(async ({ ctx, input, next }) => {
+    const id = (input as unknown as Record<string, string>)?.[idParam];
+    if (!id) {
+      throw new TRPCError({
+        code: 'BAD_REQUEST',
+        message: `Missing ${idParam} parameter`,
+      });
+    }
+
+    const resource = await getResource(id, ctx.db);
+    if (!resource) {
+      throw new TRPCError({
+        code: 'NOT_FOUND',
+        message: 'Resource not found',
+      });
+    }
+
+    if (resource.userId !== ctx.user!.id) {
+      throw new TRPCError({
+        code: 'FORBIDDEN',
+        message: 'You do not have access to this resource',
+      });
+    }
+
+    return next({ ctx: { ...ctx, user: ctx.user! } });
+  });
+}
