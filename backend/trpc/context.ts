@@ -1,11 +1,16 @@
 import { initTRPC, TRPCError } from '@trpc/server';
+import { randomUUID } from 'node:crypto';
 import { db } from '../db';
 import { getUserFromJwt, type SupabaseUser } from '../supabase';
+import { createChildLogger } from '../logger';
+import type { Logger } from 'pino';
 
 // Context type
 export type Context = {
   db: typeof db;
   user: SupabaseUser | null;
+  traceId: string;
+  logger: Logger;
 };
 
 // Context creation function
@@ -16,10 +21,16 @@ export async function createContext(opts: { req: { headers: Record<string, strin
   
   // Get user from JWT (if present)
   const user = jwt ? await getUserFromJwt(jwt) : null;
-  
+
+  // Generate a unique trace ID for this request
+  const traceId = randomUUID();
+  const logger = createChildLogger({ traceId });
+
   return {
     db,
     user,
+    traceId,
+    logger,
   };
 }
 

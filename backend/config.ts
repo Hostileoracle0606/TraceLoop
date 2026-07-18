@@ -22,6 +22,10 @@ const envSchema = z.object({
   ANTHROPIC_API_KEY: z.string().min(1).optional(),
   OPENAI_API_KEY: z.string().min(1).optional(),
 
+  // Observability
+  LOG_LEVEL: z.enum(['trace', 'debug', 'info', 'warn', 'error']).default('info'),
+  SENTRY_DSN: z.string().url().optional(),
+
   // Server
   PORT: z.coerce.number().default(3000),
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
@@ -89,4 +93,12 @@ export function getPort(): number {
 
 export function getNodeEnv(): string {
   return getEnv().NODE_ENV;
+}
+
+export function getLogConfig(): { level: Env['LOG_LEVEL']; sentryDsn?: string } {
+  const e = getEnv();
+  return {
+    level: e.LOG_LEVEL,
+    sentryDsn: e.SENTRY_DSN,
+  };
 }
