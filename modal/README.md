@@ -15,11 +15,13 @@ modal setup  # authenticate
 modal deploy modal/app.py
 ```
 
-This prints the web endpoint URL. Copy it and set it as the `MODAL_ENDPOINT` env var, or pass it directly to `ModalFirmwareJobRunner`:
+This prints the web endpoint URL. Pass it directly to `ModalFirmwareJobRunner`:
 
 ```typescript
-const runner = new ModalFirmwareJobRunner("https://<your-app>.modal.run/firmware_job");
+const runner = new ModalFirmwareJobRunner("https://hostileoracle0606--traceloop-firmware-job-firmware-job.modal.run");
 ```
+
+Deployment dashboard: https://modal.com/apps/hostileoracle0606/main/deployed/traceloop-firmware-job
 
 ## Image build time
 
