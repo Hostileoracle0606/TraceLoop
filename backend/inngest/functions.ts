@@ -159,7 +159,7 @@ export const firmwareRunPipeline = inngest.createFunction(
     }
 
     // ── Step 2: Analyze locally ────────────────────────────────────
-    let analyzeResult: { status: 'passed' | 'failed'; rootCauseText?: string; rootCause?: TraceEvent };
+    let analyzeResult: { status: 'passed' | 'failed'; rootCauseText?: string; rootCause?: TraceEvent; assertion?: Assertion };
     try {
       analyzeResult = await step.run('analyze-results', async () => {
         await updateRunStatus(data.runId, 'analyzing');
@@ -200,7 +200,9 @@ export const firmwareRunPipeline = inngest.createFunction(
         if (!task) throw new Error('Task not found');
 
         const rootCause = analyzeResult.rootCause;
-        const assertion = data.acceptanceCriteria[0];
+        // The criterion that actually failed and produced rootCause — may not be
+        // acceptanceCriteria[0] when earlier criteria passed and a later one didn't.
+        const assertion = analyzeResult.assertion ?? data.acceptanceCriteria[0];
 
         if (rootCause && assertion) {
           const patchProposal = await proposePatchLLM(rootCause as unknown as Parameters<typeof proposePatchLLM>[0], data.files, assertion);
@@ -428,7 +430,14 @@ async function logActivity(
 export function analyzeTraceStep(
   rawTraceLog: string,
   acceptanceCriteria: Array<{ name: string; register: string; expect: string; byTime: number }>,
-): { status: 'passed' | 'failed'; rootCauseText?: string; rootCause?: TraceEvent; chain?: unknown } {
+): {
+  status: 'passed' | 'failed';
+  rootCauseText?: string;
+  rootCause?: TraceEvent;
+  chain?: unknown;
+  /** The specific criterion that produced rootCause — NOT always acceptanceCriteria[0]. */
+  assertion?: Assertion;
+} {
   // Empty criteria ≠ passed — there's nothing to prove
   if (acceptanceCriteria.length === 0) {
     return { status: 'failed', rootCauseText: 'No acceptance criteria to prove' };
@@ -445,13 +454,18 @@ export function analyzeTraceStep(
     return { status: 'passed', rootCauseText: results[0]?.rootCauseText };
   }
 
-  // Return the first failure's root cause
-  const firstFail = results.find((r) => r.status === 'failed');
+  // Return the first failure's root cause paired with the SAME criterion that
+  // produced it. propose-patch sends rootCause + assertion to the LLM together,
+  // so they must describe the same criterion (not acceptanceCriteria[0]).
+  const firstFailIndex = results.findIndex((r) => r.status === 'failed');
+  const firstFail = firstFailIndex === -1 ? undefined : results[firstFailIndex];
   return {
     status: 'failed',
     rootCause: firstFail?.rootCause,
     rootCauseText: firstFail?.rootCauseText,
     chain: firstFail?.chain,
+    assertion:
+      firstFailIndex === -1 ? undefined : (acceptanceCriteria[firstFailIndex] as Assertion),
   };
 }
 

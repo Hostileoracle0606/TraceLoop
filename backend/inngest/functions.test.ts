@@ -43,6 +43,24 @@ describe('analyzeTraceStep', () => {
     expect(result.status).toBe('failed');
   });
 
+  it('pairs rootCause with the criterion that actually failed (not acceptanceCriteria[0])', () => {
+    // First criterion passes, second fails. propose-patch must receive the
+    // SECOND criterion as the assertion — pairing it with the wrong criterion
+    // sends a mismatched (rootCause, assertion) pair to the patch LLM.
+    const passingCriterion = {
+      name: 'timer_fires',
+      register: 'TIM2_SR.UIF',
+      expect: '1',
+      byTime: 2000,
+    };
+
+    const result = analyzeTraceStep(realLog, [passingCriterion, greenLedAssertion]);
+
+    expect(result.status).toBe('failed');
+    expect(result.assertion).toEqual(greenLedAssertion);
+    expect(result.assertion).not.toEqual(passingCriterion);
+  });
+
   it('returns passed only when ALL criteria pass', () => {
     // Use a criterion that matches the actual trace (pin 13 was written)
     const orangeCriterion = {
