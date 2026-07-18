@@ -4,6 +4,7 @@ import { db } from '../db';
 import { getUserFromJwt, type SupabaseUser } from '../supabase';
 import { createChildLogger } from '../logger';
 import type { Logger } from 'pino';
+import { rateLimitMiddleware, createRateLimiter } from './middleware/rateLimit';
 
 // Context type
 export type Context = {
@@ -41,6 +42,9 @@ const t = initTRPC.context<Context>().create();
 export const router = t.router;
 export const procedure = t.procedure;
 
+// Rate limiter instance for authenticated procedures (100 req/min per user)
+const authLimiter = createRateLimiter(60_000, 100);
+
 // Authenticated procedure (requires user)
 export const authenticatedProcedure = t.procedure.use(async ({ ctx, next }) => {
   if (!ctx.user) {
@@ -51,6 +55,11 @@ export const authenticatedProcedure = t.procedure.use(async ({ ctx, next }) => {
   }
   return next({ ctx: { ...ctx, user: ctx.user } });
 });
+
+// Rate-limited procedure (applies rate limiting on top of auth)
+export const rateLimitedProcedure = authenticatedProcedure.use(
+  rateLimitMiddleware({ limiter: authLimiter })
+);
 
 // Ownership check middleware factory
 export function requireOwnership<T extends { userId: string }>(
