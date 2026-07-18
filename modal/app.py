@@ -58,12 +58,13 @@ image = (
         "pip install -r /opt/zephyrproject/zephyr/scripts/requirements.txt"
     )
     # Download and install Zephyr SDK (ARM toolchain for STM32F4)
+    # Skip host tools (-h) as they're failing in container environment
     .run_commands(
         "cd /tmp && "
         "wget https://github.com/zephyrproject-rtos/sdk-ng/releases/download/v0.17.0/zephyr-sdk-0.17.0_linux-x86_64.tar.xz && "
         "tar xf zephyr-sdk-0.17.0_linux-x86_64.tar.xz -C /opt && "
         "cd /opt/zephyr-sdk-0.17.0 && "
-        "./setup.sh -t arm-zephyr-eabi -h -c || (echo 'SDK setup failed, trying without -c flag' && ./setup.sh -t arm-zephyr-eabi -h)"
+        "./setup.sh -t arm-zephyr-eabi"
     )
     # Install Renode (portable Linux binary)
     .run_commands(
