@@ -4,6 +4,7 @@ import { router, authenticatedProcedure } from '../context';
 import { tasks, projects, runs, boards, activityLogs, type TaskStatus, type PermissionProfile } from '../../db/schema';
 import { canTransition, type AgentState } from '../../../src/engine/agent-state';
 import { inngest, Events, type TaskRunEventData } from '../../inngest/client';
+import { validateFirmwareFilesInput, validateFileSizeLimits } from '../middleware/validate';
 
 // Zod schemas for task data
 const acceptanceCriteriaSchema = z.array(z.object({
@@ -98,6 +99,12 @@ export const tasksRouter = router({
 
       if (!project || project.userId !== ctx.user.id) {
         throw new Error('Access denied');
+      }
+
+      // Validate initial firmware files if provided
+      if (input.initialFiles && Object.keys(input.initialFiles).length > 0) {
+        validateFirmwareFilesInput(input.initialFiles);
+        validateFileSizeLimits(input.initialFiles);
       }
 
       // Create the task
@@ -288,6 +295,10 @@ export const tasksRouter = router({
       if (!task.currentFiles || Object.keys(task.currentFiles).length === 0) {
         throw new Error('Task has no source files to build');
       }
+
+      // Validate firmware files before execution
+      validateFirmwareFilesInput(task.currentFiles);
+      validateFileSizeLimits(task.currentFiles);
 
       if (!project.boardId) {
         throw new Error('Project has no board assigned');
