@@ -8,6 +8,7 @@ export default defineConfig({
     alias: {
       '@engine': fileURLToPath(new URL('../src/engine', import.meta.url)),
       '@fixtures': fileURLToPath(new URL('../src/fixtures', import.meta.url)),
+      '@backend': fileURLToPath(new URL('../backend', import.meta.url)),
     },
   },
   server: {

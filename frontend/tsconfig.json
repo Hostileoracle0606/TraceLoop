@@ -12,9 +12,10 @@
     "baseUrl": ".",
     "paths": {
       "@engine/*": ["../src/engine/*"],
-      "@fixtures/*": ["../src/fixtures/*"]
+      "@fixtures/*": ["../src/fixtures/*"],
+      "@backend/*": ["../backend/*"]
     },
     "lib": ["ES2022", "DOM", "DOM.Iterable"]
   },
-  "include": ["src", "../src/engine", "../src/fixtures"]
+  "include": ["src", "../src/engine", "../src/fixtures", "../backend/trpc"]
 }
