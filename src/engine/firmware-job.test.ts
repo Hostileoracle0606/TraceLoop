@@ -35,7 +35,7 @@ describe('outcomeFromJob', () => {
     if (outcome.status === 'ran') {
       const vm = analyze(outcome.trace, greenLedAssertion);
       expect(vm.status).toBe('failed');
-      expect(vm.rootCause.register).toBe('GPIOG_ODR[13]');
+      expect(vm.rootCause?.register).toBe('GPIOG_ODR[13]');
     }
   });
 });

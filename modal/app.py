@@ -23,7 +23,9 @@ import modal
 # The Modal image: Zephyr SDK + Renode + build tools.
 # This is a heavy image — first build takes several minutes.
 image = (
-    modal.Image.debian_slim(python_version="3.11")
+    # Python 3.12+ is required: west's build.py calls pathlib
+    # relative_to(..., walk_up=True), which only exists in 3.12+.
+    modal.Image.debian_slim(python_version="3.12")
     .apt_install(
         # Build tools
         "cmake",
@@ -57,27 +59,33 @@ image = (
     .run_commands(
         "pip install -r /opt/zephyrproject/zephyr/scripts/requirements.txt"
     )
-    # Download and install Zephyr SDK (ARM toolchain for STM32F4)
-    # Skip host tools (-h) as they're failing in container environment
+    # Install the Zephyr SDK that MATCHES the cloned Zephyr, via `west sdk install`.
+    # A hardcoded SDK version drifts out of sync with Zephyr main: the cloned tree
+    # required SDK >= 1.0 while a pinned 0.17.0 was rejected by CMake. west sdk
+    # install fetches the exact SDK the tree wants and registers it in the CMake
+    # package registry, so Zephyr discovers it automatically (no env var needed).
+    # --no-hosttools: the SDK's host-tools installer (qemu/openocd/etc.) fails in
+    # the minimal container, and the build doesn't need them — the image already
+    # apt-installs cmake/ninja/dtc. The GNU toolchain + CMake registration still happen.
     .run_commands(
-        "cd /tmp && "
-        "wget https://github.com/zephyrproject-rtos/sdk-ng/releases/download/v0.17.0/zephyr-sdk-0.17.0_linux-x86_64.tar.xz && "
-        "tar xf zephyr-sdk-0.17.0_linux-x86_64.tar.xz -C /opt && "
-        "cd /opt/zephyr-sdk-0.17.0 && "
-        "./setup.sh -t arm-zephyr-eabi"
+        "cd /opt/zephyrproject && west sdk install --toolchains arm-zephyr-eabi --no-hosttools"
     )
     # Install Renode (portable Linux binary)
+    # Extract into a FIXED /opt/renode with --strip-components=1: the tarball's
+    # top-level dir is named 'renode_1.16.1_portable' (not 'renode-1.16.1'), so a
+    # hardcoded path was wrong. Flattening makes the path predictable.
     .run_commands(
-        "cd /tmp && "
+        "mkdir -p /opt/renode && cd /tmp && "
         "wget https://github.com/renode/renode/releases/download/v1.16.1/renode-1.16.1.linux-portable.tar.gz && "
-        "tar xf renode-1.16.1.linux-portable.tar.gz -C /opt && "
-        "ln -s /opt/renode-1.16.1/renode /usr/local/bin/renode"
+        "tar xf renode-1.16.1.linux-portable.tar.gz -C /opt/renode --strip-components=1 && "
+        "ln -s /opt/renode/renode /usr/local/bin/renode"
     )
     .env(
         {
             "ZEPHYR_BASE": "/opt/zephyrproject/zephyr",
-            "ZEPHYR_SDK_INSTALL_DIR": "/opt/zephyr-sdk-0.17.0",
-            "PATH": "/opt/zephyr-sdk-0.17.0/arm-zephyr-eabi/bin:/opt/renode-1.16.1:${PATH}",
+            # The SDK is found via the CMake package registry that `west sdk
+            # install` writes, so ZEPHYR_SDK_INSTALL_DIR is intentionally unset.
+            "PATH": "/opt/renode:${PATH}",
         }
     )
 )
@@ -148,6 +156,22 @@ def firmware_job(request: dict) -> dict:
             "trace": { "log": str } | undefined  // only present if build.ok
         }
     """
+    import traceback
+
+    try:
+        return _firmware_job_impl(request)
+    except Exception:
+        # Surface the traceback as a build-failed result instead of a 500, so the
+        # control plane (and debugging) sees what actually broke in the container.
+        return {
+            "build": {
+                "ok": False,
+                "log": "compute-plane exception:\n" + traceback.format_exc(),
+            }
+        }
+
+
+def _firmware_job_impl(request: dict) -> dict:
     files = request["files"]
     board = request["board"]
 
@@ -205,13 +229,14 @@ def firmware_job(request: dict) -> dict:
         resc_path = workdir_path / "trace.resc"
         resc_path.write_text(resc_content)
 
-        # Run Renode with the trace script
-        renode_cmd = ["renode", "--disable-xwt", resc_path]
+        # Run Renode with the trace script. --console runs the monitor headless
+        # (the .resc ends in `quit`); str() because subprocess wants strings.
+        renode_cmd = ["renode", "--console", "--disable-xwt", str(resc_path)]
 
         renode_result, renode_timed_out = _run_command(
             renode_cmd,
             timeout=60,  # 1-minute sim timeout
-            cwd="/opt/renode-1.16.1",
+            cwd="/opt/renode",
         )
 
         if renode_timed_out:

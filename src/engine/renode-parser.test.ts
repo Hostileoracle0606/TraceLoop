@@ -27,7 +27,7 @@ describe('parseRenodeLog', () => {
     const vm = analyze(trace, greenLedAssertion);
 
     expect(vm.status).toBe('failed');
-    expect(vm.rootCause.register).toBe('GPIOG_ODR[13]');
+    expect(vm.rootCause?.register).toBe('GPIOG_ODR[13]');
     expect(vm.chain.map((n) => n.label)).toContain('Orange LED on');
   });
 
@@ -48,6 +48,6 @@ describe('parseRenodeLog', () => {
     const vm = analyze(trace, greenLedAssertion);
 
     expect(vm.status).toBe('failed');
-    expect(vm.rootCause.register).toBe('GPIOG_ODR[13]');
+    expect(vm.rootCause?.register).toBe('GPIOG_ODR[13]');
   });
 });

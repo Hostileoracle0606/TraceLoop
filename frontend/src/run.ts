@@ -6,6 +6,7 @@
 // bare-metal ticket-04 build.
 import { analyze } from '@engine/analyze';
 import { toDashboardRun } from '@engine/serialize';
+import { proposePatch } from '@engine/authoring-loop';
 import { greenLedAssertion } from '@fixtures/timer2-wrong-pin';
 import type { TraceEvent } from '@engine/types';
 import renodeTrace from './renode-trace.json';
@@ -21,3 +22,10 @@ export const runData = {
   }),
   rootCauseText: vm.rootCauseText,
 };
+
+// The real patch the engine proposes from this run's root cause (before/after
+// are derived from the pin→LED mapping, so no firmware source is needed here).
+// Undefined on a passing run.
+export const patch = vm.rootCause
+  ? proposePatch({}, vm.rootCause.register, greenLedAssertion.register)
+  : undefined;

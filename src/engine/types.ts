@@ -63,8 +63,8 @@ export interface CausalNode {
  */
 export interface RunViewModel {
   status: 'passed' | 'failed';
-  /** the event the analysis blames — the divergence from the assertion, not merely the earliest event */
-  rootCause: TraceEvent;
+  /** the event the analysis blames — the divergence from the assertion, not merely the earliest event. Absent on a passing run. */
+  rootCause?: TraceEvent;
   /** the ordered causal path, ending at the violated node when the run failed */
   chain: CausalNode[];
   /** deterministic plain-language explanation of the root cause (the LLM only narrates this, never derives it) */

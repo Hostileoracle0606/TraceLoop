@@ -4,10 +4,8 @@
  * TIM2 fires a periodic update interrupt (IRQ 28). The handler is SUPPOSED to
  * light the green LED (GPIOG pin 12) but contains the planted bug: it writes
  * the orange LED (GPIOG pin 13) instead, via Zephyr's gpio_pin_set_dt() — the
- * exact API and the exact patch line the reused dashboard's PatchReview shows:
- *
- *     -    gpio_pin_set_dt(&orange_led, 1);
- *     +    gpio_pin_set_dt(&green_led, 1);
+ * same API the reused dashboard's PatchReview shows. The fix swaps the ISR's
+ * write from the orange LED spec to the green LED spec (see proposePatch).
  *
  * TIM2 itself is configured with direct register access (Zephyr does not ship
  * a STM32 timer abstraction that preserves the exact IRQ28/timer_isr causal

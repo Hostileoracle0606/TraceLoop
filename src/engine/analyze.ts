@@ -28,14 +28,8 @@ export function analyze(trace: TraceEvent[], assertion: Assertion): RunViewModel
       e.time <= assertion.byTime,
   );
 
-  const rootCause = findDivergentWrite(trace, assertion);
-  if (!rootCause) {
-    // Only the failing-divergence case is driven by a test so far.
-    throw new Error('no divergent write found for a failing assertion');
-  }
-
   // Walk events in time order, emitting each observed event and any derived
-  // consequence its board wiring implies. Append the violation when the run failed.
+  // consequence its board wiring implies. Shared by passing and failing runs.
   const nodes: Omit<CausalNode, 'id'>[] = [];
   for (const e of [...trace].sort((a, b) => a.time - b.time)) {
     nodes.push({
@@ -60,17 +54,35 @@ export function analyze(trace: TraceEvent[], assertion: Assertion): RunViewModel
     }
   }
 
-  if (!satisfied) {
-    nodes.push({
-      label: 'Assertion failed',
-      lane: 'Test assertion',
-      taxonomy: 'violated',
-      time: assertion.byTime,
-      register: assertion.register,
-      value: `expected ${assertion.expect}`,
-      detail: `${assertion.name}: expected ${assertion.register} = ${assertion.expect} by ${assertion.byTime} µs`,
-    });
+  // Passing run: the assertion was satisfied. No divergence, no violation, no root cause.
+  if (satisfied) {
+    const chain: CausalNode[] = nodes.map((n, i) => ({ id: `e${i + 1}`, ...n }));
+    return {
+      status: 'passed',
+      chain,
+      rootCauseText:
+        `${assertion.name} satisfied: ${assertion.register} reached ${assertion.expect} ` +
+        `by ${assertion.byTime} µs.`,
+    };
   }
+
+  // Failing run: find the divergent write and append the violation.
+  const rootCause = findDivergentWrite(trace, assertion);
+  if (!rootCause) {
+    // Missing-write failures (nothing diverges; an expected write is simply absent)
+    // are a distinct, not-yet-implemented path — see CONTEXT.md "Missing-write failure".
+    throw new Error('failing run with no divergent write (missing-write case not yet supported)');
+  }
+
+  nodes.push({
+    label: 'Assertion failed',
+    lane: 'Test assertion',
+    taxonomy: 'violated',
+    time: assertion.byTime,
+    register: assertion.register,
+    value: `expected ${assertion.expect}`,
+    detail: `${assertion.name}: expected ${assertion.register} = ${assertion.expect} by ${assertion.byTime} µs`,
+  });
 
   const chain: CausalNode[] = nodes.map((n, i) => ({ id: `e${i + 1}`, ...n }));
 
@@ -80,7 +92,7 @@ export function analyze(trace: TraceEvent[], assertion: Assertion): RunViewModel
     `by ${assertion.byTime} µs.`;
 
   return {
-    status: satisfied ? 'passed' : 'failed',
+    status: 'failed',
     rootCause,
     chain,
     rootCauseText,

@@ -36,3 +36,9 @@ The first deploy builds the Modal image — Zephyr SDK + Renode + dependencies. 
 5. Returns `FirmwareJobResult`: `{ build: { ok, log }, trace?: { log } }`
 
 All causal analysis stays in the control plane — this is a pure toolchain runner.
+
+## Gotchas (learned the hard way)
+
+- **Python 3.12+ is required in the image.** West's `build.py` calls `pathlib.relative_to(..., walk_up=True)`, which only exists in Python 3.12+. On `debian_slim(python_version="3.11")` every build dies with `TypeError: ... unexpected keyword argument 'walk_up'` before compiling anything.
+- **Install the SDK with `west sdk install`, not a pinned tarball.** `west init` (no `--mr`) clones Zephyr *main*, which moves. A hardcoded SDK (e.g. 0.17.0) drifts out of sync — CMake rejects it with *"Could not find a configuration file for package Zephyr-sdk compatible with requested version 1.0"*. `west sdk install` fetches the SDK the cloned tree actually wants and registers it in the CMake package registry (so `ZEPHYR_SDK_INSTALL_DIR` is unnecessary). To make builds reproducible, also pin Zephyr with `west init --mr <tag>`.
+- **Pass `--no-hosttools` to `west sdk install` in the container.** The SDK's host-tools installer (`setup.sh -h`: qemu/openocd/etc.) fails in the minimal image and isn't needed to *build* — the image already apt-installs `cmake`/`ninja`/`dtc`. The GNU toolchain and CMake registration still happen without it.

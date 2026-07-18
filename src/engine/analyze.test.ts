@@ -11,8 +11,8 @@ describe('analyze', () => {
 
     // Root cause is the divergence — the write to pin 13 — NOT e1 (Timer2 expired),
     // which is the earliest event but entirely correct behavior.
-    expect(vm.rootCause.register).toBe('GPIOG_ODR[13]');
-    expect(vm.rootCause.detail).toContain('main.c:37');
+    expect(vm.rootCause?.register).toBe('GPIOG_ODR[13]');
+    expect(vm.rootCause?.detail).toContain('main.c:37');
   });
 
   it('builds the causal chain: timer → wrong write → derived LED consequence → violated assertion', () => {
@@ -41,5 +41,27 @@ describe('analyze', () => {
     expect(vm.rootCauseText).toContain('main.c:37');
     expect(vm.rootCauseText).toContain('GPIOG_ODR[13]'); // what was wrongly written
     expect(vm.rootCauseText).toContain('GPIOG_ODR[12]'); // what the assertion expected
+  });
+
+  it('reports a PASSING run with no root cause when the assertion is satisfied', () => {
+    // Same scenario, but the ISR writes the CORRECT pin 12 (green) — the fixed firmware
+    // the authoring loop converges to. There is no divergent write, so no root cause.
+    const passingTrace = timer2WrongPinTrace.map((e) =>
+      e.type === 'gpio-write'
+        ? {
+            ...e,
+            register: 'GPIOG_ODR[12]',
+            label: 'GPIO pin 12 written',
+            lane: 'GPIO pin 12',
+            effect: { label: 'Green LED on', lane: 'Green LED', register: 'LED_GREEN', value: 'OFF → ON' },
+          }
+        : e,
+    );
+
+    const vm = analyze(passingTrace, greenLedAssertion);
+
+    expect(vm.status).toBe('passed');
+    expect(vm.rootCause).toBeUndefined();
+    expect(vm.chain.some((n) => n.taxonomy === 'violated')).toBe(false);
   });
 });

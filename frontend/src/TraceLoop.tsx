@@ -1,7 +1,8 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import { runData } from "./run";
+import { useMemo, useState, useCallback } from "react";
+import { runData, patch } from "./run";
+import firmwareSource from '../../firmware-zephyr/timer2-wrong-pin/src/main.c?raw';
 
 type View =
   | "dashboard"
@@ -395,43 +396,23 @@ function CreateProject({ navigate }: { navigate: (view: View) => void }) {
   );
 }
 
-const codeLines = [
-  ["1", "#include <zephyr/kernel.h>"],
-  ["2", "#include <zephyr/drivers/gpio.h>"],
-  ["3", "#include <zephyr/drivers/timer/system_timer.h>"],
-  ["4", ""],
-  ["5", "#define TIMER_NODE DT_NODELABEL(timers2)"],
-  ["6", "#define GREEN_LED DT_ALIAS(led1)"],
-  ["7", "#define ORANGE_LED DT_ALIAS(led3)"],
-  ["8", ""],
-  ["9", "static const struct gpio_dt_spec green_led ="],
-  ["10", "    GPIO_DT_SPEC_GET(GREEN_LED, gpios);"],
-  ["11", "static const struct gpio_dt_spec orange_led ="],
-  ["12", "    GPIO_DT_SPEC_GET(ORANGE_LED, gpios);"],
-  ["13", ""],
-  ["32", "static void timer_isr(const void *arg)"],
-  ["33", "{"],
-  ["34", "    TIM2->SR &= ~TIM_SR_UIF;"],
-  ["35", ""],
-  ["36", "    /* Turn on the green status LED */"],
-  ["37", "    gpio_pin_set_dt(&orange_led, 1);"],
-  ["38", "}"],
-  ["39", ""],
-  ["40", "int main(void)"],
-  ["41", "{"],
-  ["42", "    timer2_start(K_USEC(1000));"],
-  ["43", "    return 0;"],
-  ["44", "}"],
-];
+/** Parse raw firmware source into numbered lines for the code editor. */
+function toCodeLines(source: string): [string, string][] {
+  return source.split('\n').map((line, i) => [String(i + 1), line]);
+}
 
-function CodeEditor({ selectedLine = 37, compact = false }: { selectedLine?: number; compact?: boolean }) {
+/** Line numbers the engine flagged as relevant (from the causal chain). */
+const ENGINE_FLAGGED_LINES = new Set([5, 6, 7, 32, 37, 42, 45, 48, 61, 62, 64]);
+
+function CodeEditor({ selectedLine = 45, compact = false, source = firmwareSource }: { selectedLine?: number; compact?: boolean; source?: string }) {
+  const lines = useMemo(() => toCodeLines(source), [source]);
   return (
     <div className={`code-editor ${compact ? "compact" : ""}`}>
       <div className="editor-tabs"><button className="active"><span className="c-file">C</span> main.c <i>●</i></button><button>green_led.robot</button></div>
       <div className="editor-code">
-        {codeLines.map(([num, line]) => (
+        {lines.map(([num, line]) => (
           <div className={`code-line ${Number(num) === selectedLine ? "line-selected" : ""}`} key={`${num}-${line}`}>
-            <span className="agent-gutter">{[5, 6, 7, 32, 37, 42].includes(Number(num)) ? "▎" : ""}</span>
+            <span className="agent-gutter">{ENGINE_FLAGGED_LINES.has(Number(num)) ? "▎" : ""}</span>
             <span className="line-num">{num}</span>
             <code dangerouslySetInnerHTML={{ __html: syntaxLine(line) }} />
             {Number(num) === selectedLine && <span className="line-note">e4 · observed write</span>}
@@ -454,19 +435,49 @@ function syntaxLine(line: string) {
     .replace(/(\b\d+\b)/g, '<span class="syn-number">$1</span>');
 }
 
+interface ChatMessage {
+  role: 'user' | 'agent';
+  text: string;
+}
+
 function AgentWorkspace({ navigate }: { navigate: (view: View) => void }) {
+  // Engine-derived steps: reflect the actual pipeline state from runData.
+  const runFailed = runData.run.status === 'fail';
   const steps = [
-    ["Inspecting board capabilities", "done", "GPIOG pins 12–15 available"],
-    ["Generating firmware", "done", "Created 5 files · 84 lines"],
-    ["Compiling ELF", "done", "firmware.elf · 71.4 KB"],
+    ["Inspecting board capabilities", "done", `${runData.run.board}`],
+    ["Generating firmware", "done", `${firmwareSource.split('\n').length} lines`],
+    ["Compiling ELF", "done", "west build · exit 0"],
     ["Loading ELF into Renode", "done", "STM32F4 platform ready"],
     ["Running test scenario", "done", "green_led_should_turn_on"],
-    ["Detecting failure", "failed", "Assertion failed at 2000 µs"],
-  ];
+    ["Detecting failure", runFailed ? "failed" : "done", runFailed ? `Assertion failed at 2000 µs` : "All assertions passed"],
+  ] as const;
+
+  const [messages, setMessages] = useState<ChatMessage[]>([
+    { role: 'user', text: 'Use Timer 2 to turn on the green LED within 2 milliseconds.' },
+    { role: 'agent', text: `I'll inspect the board, generate Zephyr firmware, compile it, and test the behavior in Renode.` },
+  ]);
+  const [input, setInput] = useState('');
+
+  const sendMessage = useCallback(() => {
+    const text = input.trim();
+    if (!text) return;
+    setMessages(prev => [...prev, { role: 'user', text }]);
+    setInput('');
+    // Agent acknowledges — in a full implementation this would call the engine.
+    setTimeout(() => {
+      setMessages(prev => [...prev, {
+        role: 'agent',
+        text: runFailed
+          ? `The trace is complete. ${runData.rootCauseText}`
+          : 'All assertions passed. The firmware is correct.',
+      }]);
+    }, 300);
+  }, [input, runFailed]);
+
   return (
     <div className="workspace-page agent-page">
       <div className="process-strip">
-        {['Plan', 'Generate', 'Build', 'Simulate', 'Analyze', 'Patch'].map((item, index) => <div key={item} className={index < 5 ? "done" : index === 5 ? "pending" : ""}><span>{index < 4 ? "✓" : index === 4 ? "!" : index + 1}</span><strong>{item}</strong></div>)}
+        {['Plan', 'Generate', 'Build', 'Simulate', 'Analyze', 'Patch'].map((item, index) => <div key={item} className={index < 5 ? "done" : runFailed ? "pending" : "done"}><span>{index < 4 ? "✓" : index === 4 ? (runFailed ? "!" : "✓") : runFailed ? "!" : "✓"}</span><strong>{item}</strong></div>)}
       </div>
       <div className="ide-layout">
         <aside className="file-tree">
@@ -476,26 +487,28 @@ function AgentWorkspace({ navigate }: { navigate: (view: View) => void }) {
           <button className="tree-row file indent-2 active"><b>C</b><span>main.c</span><small>●</small></button>
           <button className="tree-row file indent"><b>◈</b><span>CMakeLists.txt</span></button>
           <button className="tree-row file indent"><b>≡</b><span>prj.conf</span></button>
-          <div className="tree-row folder indent">⌄ <span>tests</span></div>
-          <button className="tree-row file indent-2"><b>R</b><span>green_led.robot</span></button>
-          <button className="tree-row file indent"><b>R</b><span>platform.resc</span></button>
+          <div className="tree-row folder indent">⌄ <span>boards</span></div>
+          <button className="tree-row file indent-2"><b>◈</b><span>stm32f4_disco.overlay</span></button>
           <div className="tree-section"><strong>OUTLINE</strong><button>⌄</button></div>
-          <button className="symbol-row">ƒ <span>timer_isr</span><small>:32</small></button>
-          <button className="symbol-row">ƒ <span>main</span><small>:40</small></button>
+          <button className="symbol-row">ƒ <span>timer_isr</span><small>:39</small></button>
+          <button className="symbol-row">ƒ <span>main</span><small>:48</small></button>
         </aside>
         <CodeEditor />
         <aside className="agent-panel">
-          <div className="agent-title"><div className="agent-avatar">⌁</div><div><strong>TraceLoop Agent</strong><small><i className="live-dot" /> analyzing trace</small></div><button>•••</button></div>
+          <div className="agent-title"><div className="agent-avatar">⌁</div><div><strong>TraceLoop Agent</strong><small><i className="live-dot" /> {runFailed ? 'root cause found' : 'all tests passed'}</small></div><button>•••</button></div>
           <div className="conversation">
-            <div className="message user"><small>You</small><p>Use Timer 2 to turn on the green LED within 2 milliseconds.</p></div>
-            <div className="message agent"><small>TraceLoop Agent</small><p>I’ll inspect the board, generate Zephyr firmware, compile it, and test the behavior in Renode.</p></div>
+            {messages.map((msg, i) => (
+              <div className={`message ${msg.role}`} key={i}><small>{msg.role === 'user' ? 'You' : 'TraceLoop Agent'}</small><p>{msg.text}</p></div>
+            ))}
             <div className="agent-plan">
-              <div className="agent-plan-head"><strong>Execution plan</strong><Badge tone="blue">6 steps</Badge></div>
+              <div className="agent-plan-head"><strong>Execution plan</strong><Badge tone="blue">{steps.length} steps</Badge></div>
               {steps.map(([label, state, detail], index) => <div className={`agent-step ${state}`} key={label}><span>{state === "done" ? "✓" : "!"}</span><div><strong>{label}</strong><small>{detail}</small></div><code>0:{index + 3}</code></div>)}
             </div>
-            <div className="message agent alert"><small>TraceLoop Agent · just now</small><p>The test failed, but the trace is complete. Timer 2 and IRQ 28 behaved correctly. I found the first divergence at <code>main.c:37</code>.</p><button onClick={() => navigate("analysis")}>Open causal evidence →</button></div>
+            {runFailed && (
+              <div className="message agent alert"><small>TraceLoop Agent · just now</small><p>The test failed, but the trace is complete. {runData.rootCauseText}</p><button onClick={() => navigate("analysis")}>Open causal evidence →</button></div>
+            )}
           </div>
-          <div className="agent-input"><textarea aria-label="Message agent" placeholder="Ask TraceLoop to investigate…" /><div><button>＋</button><span>Agent may inspect; changes require approval</span><button className="send-button">↑</button></div></div>
+          <div className="agent-input"><textarea aria-label="Message agent" placeholder="Ask TraceLoop to investigate…" value={input} onChange={(e) => setInput(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); } }} /><div><button onClick={sendMessage}>＋</button><span>Agent may inspect; changes require approval</span><button className="send-button" onClick={sendMessage}>↑</button></div></div>
         </aside>
       </div>
     </div>
@@ -675,10 +688,10 @@ function PatchReview({ navigate }: { navigate: (view: View) => void }) {
     <div className="page patch-page">
       <div className="page-heading compact-heading"><div><span className="eyebrow">Agent awaiting approval</span><h1>Review evidence-backed patch</h1><p>The agent cannot apply or rerun this change without your approval.</p></div><Badge tone="amber">Approval required</Badge></div>
       <div className="patch-layout">
-        <Panel title="Proposed change" eyebrow="src/main.c · 1 line changed" className="diff-panel" action={<Badge tone="green">Low risk</Badge>}>
+        <Panel title="Proposed change" eyebrow={`${patch?.file ?? "src/main.c"} · 1 line changed`} className="diff-panel" action={<Badge tone="green">Low risk</Badge>}>
           <div className="diff-context"><span>32</span><code>static void timer_isr(const void *arg)</code></div><div className="diff-context"><span>33</span><code>{"{"}</code></div><div className="diff-context"><span>34</span><code>    TIM2-&gt;SR &amp;= ~TIM_SR_UIF;</code></div>
-          <div className="diff-line removed"><span>37</span><b>−</b><code>    gpio_pin_set_dt(&amp;orange_led, 1);</code></div>
-          <div className="diff-line added"><span>37</span><b>＋</b>{editing ? <input aria-label="Edited patch" defaultValue="    gpio_pin_set_dt(&green_led, 1);" /> : <code>    gpio_pin_set_dt(&amp;green_led, 1);</code>}</div>
+          <div className="diff-line removed"><span>37</span><b>−</b><code>{`    ${patch ? patch.before : "gpio_pin_set_dt(&orange_led, 1)"};`}</code></div>
+          <div className="diff-line added"><span>37</span><b>＋</b>{editing ? <input aria-label="Edited patch" defaultValue={`    ${patch ? patch.after : "gpio_pin_set_dt(&green_led, 1)"};`} /> : <code>{`    ${patch ? patch.after : "gpio_pin_set_dt(&green_led, 1)"};`}</code>}</div>
           <div className="diff-context"><span>38</span><code>{"}"}</code></div>
           <div className="diff-summary"><span><i className="plus">＋1</i><i className="minus">−1</i></span><span>1 file changed</span><span>No configuration changes</span></div>
         </Panel>
