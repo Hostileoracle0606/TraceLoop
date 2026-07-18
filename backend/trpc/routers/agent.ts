@@ -3,8 +3,9 @@ import { eq } from 'drizzle-orm';
 import { router, authenticatedProcedure } from '../context';
 import { tasks, projects, boards, activityLogs } from '../../db/schema';
 import { clarifyIntent, generatePlan, editSource, proposePatchLLM } from '../../llm/functions';
-import { sanitizePath, validatePlanLimits } from '../middleware/validate';
-import { applyFileOperations, type FileOperation } from '../../llm/apply-file-operations';
+import { sanitizePath } from '../middleware/validate';
+import { applyFileOperationsWithRetry, type FileOperation } from '../../llm/apply-file-operations';
+import { validatePlan, validateEditOperations, validatePatchProposal } from '../../llm/validate';
 
 /**
  * Agent tRPC router.
@@ -145,18 +146,36 @@ export const agentRouter = router({
         );
       }
 
-      // Validate plan limits and file paths
-      validatePlanLimits(input.plan);
-      for (let i = 0; i < input.plan.steps.length; i++) {
-        const step = input.plan.steps[i]!;
-        sanitizePath(step.file, `plan.steps[${i}].file`);
+      // ADR-0007: Validate plan via centralized enforcement point
+      const planValidation = validatePlan(input.plan);
+      if (!planValidation.valid) {
+        throw new Error(`Plan validation failed: ${planValidation.errors.map(e => e.message).join('; ')}`);
       }
 
       const result = await editSource(input.plan, task.currentFiles ?? {});
 
-      // Apply validated file operations to task.currentFiles (ADR-0007)
+      // ADR-0007: Validate operations against plan scope, protected files, path traversal
+      const planFiles = new Set(input.plan.steps.map(s => s.file));
+      const opsValidation = validateEditOperations(result.operations, planFiles);
+      if (!opsValidation.valid) {
+        throw new Error(`Operation validation failed: ${opsValidation.errors.map(e => e.message).join('; ')}`);
+      }
+
+      // ADR-0007: Apply-or-reflect-and-retry cycle
       const currentFiles = task.currentFiles ?? {};
-      const updatedFiles = applyFileOperations(currentFiles, result.operations as FileOperation[]);
+      const applyResult = applyFileOperationsWithRetry(currentFiles, result.operations as FileOperation[]);
+
+      if (!applyResult.success) {
+        // Return structured failure info for LLM retry feedback
+        return {
+          ...result,
+          success: false,
+          failures: applyResult.failures,
+          retryHint: 'Operations could not be applied. Use the failures array to correct and retry.',
+        };
+      }
+
+      const updatedFiles = applyResult.files!;
 
       await ctx.db
         .update(tasks)
@@ -173,7 +192,7 @@ export const agentRouter = router({
         metadata: { operationCount: result.operations.length, summary: result.summary },
       });
 
-      return { ...result, appliedFiles: Object.keys(updatedFiles) };
+      return { ...result, success: true, appliedFiles: Object.keys(updatedFiles) };
     }),
 
   /**
@@ -228,6 +247,12 @@ export const agentRouter = router({
         task.currentFiles ?? {},
         input.assertion
       );
+
+      // ADR-0007: Validate patch proposal via centralized enforcement point
+      const patchValidation = validatePatchProposal(patch);
+      if (!patchValidation.valid) {
+        throw new Error(`Patch validation failed: ${patchValidation.errors.map(e => e.message).join('; ')}`);
+      }
 
       return patch;
     }),
