@@ -10,7 +10,7 @@ function jsonResponse(status: number, body: unknown, headers: Record<string, str
 
 function makeClient(fetchImpl: typeof fetch) {
   return new BackboardClient({
-    baseUrl: 'https://backboard.example/api',
+    baseUrl: 'https://backboard.example/api/',
     apiKey: 'sk-spike-test',
     fetchImpl,
     retryBaseMs: 0, // no real waiting in tests
@@ -21,7 +21,9 @@ describe('BackboardClient mechanics', () => {
   it('sends the API key header and parses JSON', async () => {
     const fetchImpl = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
       expect(String(url)).toBe('https://backboard.example/api/threads');
-      expect(new Headers(init?.headers).get('authorization')).toBe('Bearer sk-spike-test');
+      const headers = new Headers(init?.headers);
+      expect(headers.get('X-API-Key')).toBe('sk-spike-test');
+      expect(headers.has('authorization')).toBe(false);
       return jsonResponse(200, { id: 'th_1' });
     });
     const client = makeClient(fetchImpl as unknown as typeof fetch);
