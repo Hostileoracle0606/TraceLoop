@@ -1,9 +1,10 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   validatePlan,
   validateEditOperations,
   validatePatchProposal,
-  type LLMValidationError,
+  validateWithRetry,
+  LLMValidationError,
 } from './validate';
 import type { Plan, PatchProposal } from './functions';
 import type { FileOperation } from './apply-file-operations';
@@ -234,15 +235,149 @@ describe('validateLLMOutput', () => {
   });
 });
 
-describe('LLMValidationError type', () => {
-  it('has required fields', () => {
-    const error: LLMValidationError = {
-      field: 'steps[0].file',
-      code: 'PATH_TRAVERSAL',
-      message: 'Path traversal detected',
-    };
+describe('LLMValidationError class', () => {
+  it('is an instance of Error', () => {
+    const error = new LLMValidationError('steps[0].file', 'PATH_TRAVERSAL', 'Path traversal detected');
+    expect(error).toBeInstanceOf(Error);
+    expect(error).toBeInstanceOf(LLMValidationError);
+  });
+
+  it('has field, code, and message properties', () => {
+    const error = new LLMValidationError('steps[0].file', 'PATH_TRAVERSAL', 'Path traversal detected');
     expect(error.field).toBe('steps[0].file');
     expect(error.code).toBe('PATH_TRAVERSAL');
     expect(error.message).toBe('Path traversal detected');
+  });
+
+  it('has name set to LLMValidationError', () => {
+    const error = new LLMValidationError('file', 'SCHEMA_VIOLATION', 'bad');
+    expect(error.name).toBe('LLMValidationError');
+  });
+
+  it('aggregates multiple errors into one', () => {
+    const errors = [
+      { field: 'a', code: 'PATH_TRAVERSAL' as const, message: 'traversal' },
+      { field: 'b', code: 'PROTECTED_FILE' as const, message: 'protected' },
+    ];
+    const error = LLMValidationError.fromErrors(errors);
+    expect(error).toBeInstanceOf(LLMValidationError);
+    expect(error.errors).toHaveLength(2);
+    expect(error.message).toContain('traversal');
+    expect(error.message).toContain('protected');
+  });
+});
+
+describe('validateEditOperations with file content', () => {
+  it('rejects edit when search string does not exist in file', () => {
+    const operations: FileOperation[] = [
+      { type: 'edit', path: 'src/main.c', search: 'nonexistent_code', replace: 'new_code' },
+    ];
+    const planFiles = new Set(['src/main.c']);
+    const files = { 'src/main.c': 'int main() { return 0; }' };
+    const result = validateEditOperations(operations, planFiles, files);
+    expect(result.valid).toBe(false);
+    expect(result.errors.some(e => e.code === 'SCHEMA_VIOLATION' && e.field.includes('search'))).toBe(true);
+  });
+
+  it('accepts edit when search string exists in file', () => {
+    const operations: FileOperation[] = [
+      { type: 'edit', path: 'src/main.c', search: 'return 0;', replace: 'init(); return 0;' },
+    ];
+    const planFiles = new Set(['src/main.c']);
+    const files = { 'src/main.c': 'int main() { return 0; }' };
+    const result = validateEditOperations(operations, planFiles, files);
+    expect(result.valid).toBe(true);
+  });
+
+  it('skips search check for write operations', () => {
+    const operations: FileOperation[] = [
+      { type: 'write', path: 'src/new.c', content: 'void init() {}' },
+    ];
+    const planFiles = new Set(['src/new.c']);
+    const files = {};
+    const result = validateEditOperations(operations, planFiles, files);
+    expect(result.valid).toBe(true);
+  });
+});
+
+describe('validateWithRetry', () => {
+  it('returns valid data on first attempt', async () => {
+    const validPlan = {
+      steps: [{ file: 'src/main.c', action: 'modify' as const, description: 'change' }],
+      summary: 'valid',
+    };
+    const generate = vi.fn().mockResolvedValue(validPlan);
+    const result = await validateWithRetry(generate, validatePlan);
+    expect(result).toEqual(validPlan);
+    expect(generate).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries once on validation failure then succeeds', async () => {
+    const badPlan = { steps: [], summary: '' };
+    const goodPlan = {
+      steps: [{ file: 'src/main.c', action: 'modify' as const, description: 'change' }],
+      summary: 'valid',
+    };
+    const generate = vi.fn()
+      .mockResolvedValueOnce(badPlan)
+      .mockResolvedValueOnce(goodPlan);
+    const result = await validateWithRetry(generate, validatePlan);
+    expect(result).toEqual(goodPlan);
+    expect(generate).toHaveBeenCalledTimes(2);
+  });
+
+  it('throws LLMValidationError after retry budget exhausted', async () => {
+    const badPlan = { steps: [], summary: '' };
+    const generate = vi.fn().mockResolvedValue(badPlan);
+    await expect(validateWithRetry(generate, validatePlan))
+      .rejects.toThrow(LLMValidationError);
+    expect(generate).toHaveBeenCalledTimes(2);
+  });
+
+  it('thrown error contains validation details', async () => {
+    const badPlan = {
+      steps: [{ file: '../etc/passwd', action: 'modify' as const, description: 'hack' }],
+      summary: 'malicious',
+    };
+    const generate = vi.fn().mockResolvedValue(badPlan);
+    try {
+      await validateWithRetry(generate, validatePlan);
+      expect.fail('should have thrown');
+    } catch (e) {
+      expect(e).toBeInstanceOf(LLMValidationError);
+      const err = e as LLMValidationError;
+      expect(err.errors.some(er => er.code === 'PATH_TRAVERSAL')).toBe(true);
+    }
+  });
+});
+
+describe('malformed input handling', () => {
+  it('rejects malformed plan (not an object)', () => {
+    const result = validatePlan('not a plan');
+    expect(result.valid).toBe(false);
+    expect(result.errors.some(e => e.code === 'SCHEMA_VIOLATION')).toBe(true);
+  });
+
+  it('rejects null plan', () => {
+    const result = validatePlan(null);
+    expect(result.valid).toBe(false);
+  });
+
+  it('rejects malformed patch (missing required fields)', () => {
+    const result = validatePatchProposal({ file: 'src/main.c' });
+    expect(result.valid).toBe(false);
+    expect(result.errors.some(e => e.code === 'SCHEMA_VIOLATION')).toBe(true);
+  });
+
+  it('rejects patch with wrong type for confidence', () => {
+    const result = validatePatchProposal({
+      file: 'src/main.c',
+      before: 'a',
+      after: 'b',
+      summary: 'change',
+      confidence: 'high',
+    });
+    expect(result.valid).toBe(false);
+    expect(result.errors.some(e => e.code === 'SCHEMA_VIOLATION')).toBe(true);
   });
 });

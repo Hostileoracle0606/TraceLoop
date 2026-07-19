@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { getLLMProvider } from './provider';
 import { getSystemPrompt } from './prompts';
 import { type FileOperation, fileOperationSchema } from './tools';
-import { isProtectedFile } from '../../src/engine/permissions';
+import { validatePlan, validateEditOperations, validatePatchProposal, validateWithRetry, LLMValidationError } from './validate';
 
 /**
  * LLM functions for each FSM state that requires LLM capability.
@@ -138,14 +138,20 @@ export async function generatePlan(
     .map((c) => `- ${c.name}: ${c.register} should be ${c.expect} by ${c.byTime}µs`)
     .join('\n');
 
-  const { object } = await generateObject({
-    model,
-    schema: planSchema,
-    system,
-    prompt: `Intent: ${intent}\n\nBoard: ${board.name} (${board.mcu}, ${board.architecture})\n\nAcceptance criteria:\n${criteriaContext}\n\nCurrent source files:\n${filesContext}`,
-  });
+  const plan = await validateWithRetry(
+    async () => {
+      const { object } = await generateObject({
+        model,
+        schema: planSchema,
+        system,
+        prompt: `Intent: ${intent}\n\nBoard: ${board.name} (${board.mcu}, ${board.architecture})\n\nAcceptance criteria:\n${criteriaContext}\n\nCurrent source files:\n${filesContext}`,
+      });
+      return object as unknown as Plan;
+    },
+    (p) => validatePlan(p),
+  );
 
-  return object as Plan;
+  return plan;
 }
 
 // ── editing state ──────────────────────────────────────────────────
@@ -174,28 +180,38 @@ export async function editSource(
     .map((s) => `- ${s.action} ${s.file}: ${s.description}`)
     .join('\n');
 
-  const { object } = await generateObject({
-    model,
-    schema: editSourceResultSchema,
-    system,
-    prompt: `Approved plan:\n${planContext}${rootCauseContext}\n\nCurrent source files:\n${filesContext}`,
-  });
+  const planFiles = new Set(plan.steps.map((s) => s.file));
 
-  // Validate operations against policy
-  const validatedOps = object.operations.filter((op) => {
-    // Reject path traversal
-    if (op.path.includes('..')) return false;
-    // Reject protected files
-    if (isProtectedFile(op.path)) return false;
-    // Reject edit operations on files not in the approved plan
-    if (op.type === 'edit') {
-      const planFiles = new Set(plan.steps.map((s) => s.file));
-      if (!planFiles.has(op.path)) return false;
+  const generateOps = async () => {
+    const { object } = await generateObject({
+      model,
+      schema: editSourceResultSchema,
+      system,
+      prompt: `Approved plan:\n${planContext}${rootCauseContext}\n\nCurrent source files:\n${filesContext}`,
+    });
+    return object;
+  };
+
+  // Filter valid operations using the validator (per-operation)
+  const filterValid = (ops: z.infer<typeof editSourceResultSchema>['operations']) =>
+    ops.filter((op) => validateEditOperations([op], planFiles, files).valid);
+
+  // First attempt
+  let result = await generateOps();
+  let validOps = filterValid(result.operations);
+
+  // If all operations were invalid (and there were some), retry once
+  if (validOps.length === 0 && result.operations.length > 0) {
+    result = await generateOps();
+    validOps = filterValid(result.operations);
+
+    if (validOps.length === 0) {
+      const validation = validateEditOperations(result.operations, planFiles, files);
+      throw LLMValidationError.fromErrors(validation.errors);
     }
-    return true;
-  });
+  }
 
-  return { operations: validatedOps, summary: object.summary };
+  return { operations: validOps as FileOperation[], summary: result.summary };
 }
 
 // ── patching state ─────────────────────────────────────────────────
@@ -216,20 +232,18 @@ export async function proposePatchLLM(
     .map(([path, content]) => `--- ${path} ---\n${content}`)
     .join('\n\n');
 
-  const { object } = await generateObject({
-    model,
-    schema: patchProposalSchema,
-    system,
-    prompt: `Root cause: ${rootCause.source} wrote ${rootCause.register} (${rootCause.value}) at time ${rootCause.time}µs. ${rootCause.detail}\n\nExpected: ${assertion.register} should be ${assertion.expect} by ${assertion.byTime}µs (${assertion.name})\n\nCurrent source files:\n${filesContext}\n\nPropose a minimal patch to fix the root cause.`,
-  });
+  const patch = await validateWithRetry(
+    async () => {
+      const { object } = await generateObject({
+        model,
+        schema: patchProposalSchema,
+        system,
+        prompt: `Root cause: ${rootCause.source} wrote ${rootCause.register} (${rootCause.value}) at time ${rootCause.time}µs. ${rootCause.detail}\n\nExpected: ${assertion.register} should be ${assertion.expect} by ${assertion.byTime}µs (${assertion.name})\n\nCurrent source files:\n${filesContext}\n\nPropose a minimal patch to fix the root cause.`,
+      });
+      return object as unknown as PatchProposal;
+    },
+    (p) => validatePatchProposal(p),
+  );
 
-  // Enforce policy
-  if (isProtectedFile(object.file)) {
-    throw new Error(`Cannot patch protected file: ${object.file}`);
-  }
-  if (object.file.includes('..')) {
-    throw new Error(`Invalid file path (path traversal): ${object.file}`);
-  }
-
-  return object as PatchProposal;
+  return patch;
 }
