@@ -6,7 +6,7 @@ import { canTransition, type AgentState } from '../../../src/engine/agent-state'
 import { inngest, Events, type TaskRunEventData } from '../../inngest/client';
 import { validateFirmwareFilesInput, validateFileSizeLimits } from '../middleware/validate';
 import { resolveRuntimeForNewTask } from '../../agent/runtime-selection';
-import { validateExecuteState, buildResourceControls } from './execute-helpers';
+import { validateExecuteState, buildResourceControls, isActiveTask } from './execute-helpers';
 
 // Zod schemas for task data
 const acceptanceCriteriaSchema = z.array(z.object({
@@ -50,6 +50,23 @@ export const tasksRouter = router({
         where: eq(tasks.projectId, input.projectId),
         orderBy: [desc(tasks.createdAt)],
       });
+    }),
+
+  // Get the current user's most recent active (non-terminal) task
+  getActive: authenticatedProcedure
+    .query(async ({ ctx }) => {
+      const userTasks = await ctx.db.query.tasks.findMany({
+        where: eq(tasks.userId, ctx.user.id),
+        orderBy: [desc(tasks.updatedAt)],
+        with: {
+          runs: {
+            orderBy: [desc(runs.iteration)],
+          },
+        },
+      });
+
+      const activeTask = userTasks.find((task) => isActiveTask(task.status as TaskStatus));
+      return activeTask ?? null;
     }),
 
   // Get a single task

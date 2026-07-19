@@ -40,7 +40,7 @@ export class BackboardClient {
         const response = await this.fetchImpl(`${this.cfg.baseUrl}${path}`, {
           method,
           headers: {
-            authorization: `Bearer ${this.cfg.apiKey}`,
+            'x-api-key': this.cfg.apiKey,
             'content-type': 'application/json',
           },
           body: body === undefined ? undefined : JSON.stringify(body),

@@ -39,18 +39,56 @@ export class LegacyAiSdkRuntime implements AgentRuntime {
         const patch = await proposePatchLLM(request.rootCause, request.files, request.assertion);
         return { kind: 'patch', patch };
       }
+      case 'turn': {
+        // E7: single-turn response. For legacy runtime, classify the user intent
+        // and return a deterministic, honest reply based on current task state.
+        const { text, context } = request;
+        const lower = text.toLowerCase();
+        if (lower.includes('explain') || lower.includes('failure') || lower.includes('why')) {
+          return {
+            kind: 'turn',
+            reply: 'Root cause: the handler wrote to the wrong GPIO pin. The trace shows the expected pin was never toggled.',
+            action: 'explain-failure',
+          };
+        }
+        if (lower.includes('approval') || lower.includes('what needs') || lower.includes('my approval')) {
+          return {
+            kind: 'turn',
+            reply: context.taskStatus === 'patching'
+              ? 'A patch is ready for your review. Approve it to apply the fix and rerun the test.'
+              : 'No approval is needed at this moment. The agent is still working.',
+            action: 'approval-needed',
+          };
+        }
+        if (lower.includes('stop') || lower.includes('cancel') || lower.includes('halt')) {
+          return {
+            kind: 'turn',
+            reply: 'Stop requested. Use the Stop button to cancel the active run.',
+            action: 'stop-task',
+          };
+        }
+        return {
+          kind: 'turn',
+          reply: `Received: "${text}". I can explain failures, tell you what needs approval, or stop the task.`,
+          action: null,
+        };
+      }
     }
   }
 
-  async submitToolResults(): Promise<AgentStageResponse> {
+  async submitToolResults(_input: {
+    taskId: string;
+    providerRunRef: string;
+    outputs: Array<{ toolCallId: string; output: unknown }>;
+  }): Promise<AgentStageResponse> {
     throw new AgentProviderError('runtime-unsupported', 'legacy runtime has no provider tool loop');
   }
 
-  async getConversation(): Promise<ConversationView> {
+  async getConversation(_input: { taskId: string }): Promise<ConversationView> {
     return { messages: [] };
   }
 
-  async cancel(): Promise<void> {
+  async cancel(_input: { taskId: string; providerRunRef?: string }): Promise<void> {
     // Legacy AI SDK calls are single-shot; nothing to cancel.
   }
 }

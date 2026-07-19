@@ -335,6 +335,105 @@ describe('agent router contracts', () => {
       );
     });
 
+    // ── E7: agent.turn ──────────────────────────────────────────────
+
+    it('turn requires authentication', async () => {
+      const { caller } = createCaller(null, mockDb);
+      await expect(caller.turn({
+        taskId: VALID_TASK_UUID,
+        text: 'Explain this failure',
+      })).rejects.toThrow(TRPCError);
+    });
+
+    it('turn validates taskId UUID', async () => {
+      const { caller } = createCaller(testUser, mockDb);
+      await expect(caller.turn({
+        taskId: 'bad',
+        text: 'Explain this failure',
+      })).rejects.toThrow();
+    });
+
+    it('turn validates text is non-empty', async () => {
+      const { caller } = createCaller(testUser, mockDb);
+      await expect(caller.turn({
+        taskId: VALID_TASK_UUID,
+        text: '',
+      })).rejects.toThrow();
+    });
+
+    it('turn throws for non-existent task', async () => {
+      const { caller, db } = createCaller(testUser, mockDb);
+      db.query.tasks.findFirst.mockResolvedValue(null);
+
+      await expect(caller.turn({
+        taskId: VALID_TASK_UUID,
+        text: 'Explain this failure',
+      })).rejects.toThrow('Task not found');
+    });
+
+    it('turn throws access denied for different user', async () => {
+      const { caller, db } = createCaller(testUser, mockDb);
+      db.query.tasks.findFirst.mockResolvedValue({
+        id: VALID_TASK_UUID, projectId: VALID_UUID, status: 'editing',
+      });
+      db.query.projects.findFirst.mockResolvedValue({
+        id: VALID_UUID, userId: otherUser.id,
+      });
+
+      await expect(caller.turn({
+        taskId: VALID_TASK_UUID,
+        text: 'Explain this failure',
+      })).rejects.toThrow('Access denied');
+    });
+
+    it('turn rejects terminal task status (completed)', async () => {
+      const { caller, db } = createCaller(testUser, mockDb);
+      db.query.tasks.findFirst.mockResolvedValue({
+        id: VALID_TASK_UUID, projectId: VALID_UUID, status: 'completed',
+        agentRuntime: 'legacy',
+      });
+      db.query.projects.findFirst.mockResolvedValue({
+        id: VALID_UUID, userId: testUser.id,
+      });
+
+      await expect(caller.turn({
+        taskId: VALID_TASK_UUID,
+        text: 'Explain this failure',
+      })).rejects.toThrow("Cannot submit turn: task is in 'completed' state");
+    });
+
+    it('turn rejects terminal task status (blocked)', async () => {
+      const { caller, db } = createCaller(testUser, mockDb);
+      db.query.tasks.findFirst.mockResolvedValue({
+        id: VALID_TASK_UUID, projectId: VALID_UUID, status: 'blocked',
+        agentRuntime: 'legacy',
+      });
+      db.query.projects.findFirst.mockResolvedValue({
+        id: VALID_UUID, userId: testUser.id,
+      });
+
+      await expect(caller.turn({
+        taskId: VALID_TASK_UUID,
+        text: 'Explain this failure',
+      })).rejects.toThrow("Cannot submit turn: task is in 'blocked' state");
+    });
+
+    it('turn rejects terminal task status (stopped)', async () => {
+      const { caller, db } = createCaller(testUser, mockDb);
+      db.query.tasks.findFirst.mockResolvedValue({
+        id: VALID_TASK_UUID, projectId: VALID_UUID, status: 'stopped',
+        agentRuntime: 'legacy',
+      });
+      db.query.projects.findFirst.mockResolvedValue({
+        id: VALID_UUID, userId: testUser.id,
+      });
+
+      await expect(caller.turn({
+        taskId: VALID_TASK_UUID,
+        text: 'Explain this failure',
+      })).rejects.toThrow("Cannot submit turn: task is in 'stopped' state");
+    });
+
     it('plan throws for non-existent task', async () => {
       const { caller, db } = createCaller(testUser, mockDb);
       db.query.tasks.findFirst.mockResolvedValue(null);

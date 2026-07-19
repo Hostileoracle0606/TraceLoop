@@ -2,6 +2,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   validateExecuteState,
   EXECUTABLE_STATES,
+  ACTIVE_TASK_STATES,
+  isActiveTask,
   centsToUsd,
   usdToCents,
 } from './execute-helpers';
@@ -63,6 +65,46 @@ describe('validateExecuteState', () => {
 describe('EXECUTABLE_STATES', () => {
   it('contains exactly planning, editing, blocked', () => {
     expect(EXECUTABLE_STATES).toEqual(['planning', 'editing', 'blocked']);
+  });
+});
+
+describe('isActiveTask', () => {
+  it('returns true for non-terminal states', () => {
+    const activeStates: TaskStatus[] = [
+      'clarification-needed',
+      'planning',
+      'editing',
+      'building',
+      'simulating',
+      'analyzing',
+      'patching',
+      'rerunning',
+    ];
+    activeStates.forEach((status) => {
+      expect(isActiveTask(status)).toBe(true);
+    });
+  });
+
+  it('returns false for terminal states', () => {
+    const terminalStates: TaskStatus[] = ['completed', 'blocked', 'stopped'];
+    terminalStates.forEach((status) => {
+      expect(isActiveTask(status)).toBe(false);
+    });
+  });
+});
+
+describe('ACTIVE_TASK_STATES', () => {
+  it('contains exactly the non-terminal states', () => {
+    expect(ACTIVE_TASK_STATES).toEqual([
+      'clarification-needed',
+      'planning',
+      'editing',
+      'building',
+      'simulating',
+      'analyzing',
+      'patching',
+      'rerunning',
+    ]);
   });
 });
 

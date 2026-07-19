@@ -21,7 +21,7 @@ describe('BackboardClient mechanics', () => {
   it('sends the API key header and parses JSON', async () => {
     const fetchImpl = vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
       expect(String(url)).toBe('https://backboard.example/api/threads');
-      expect(new Headers(init?.headers).get('authorization')).toBe('Bearer sk-spike-test');
+      expect(new Headers(init?.headers).get('x-api-key')).toBe('sk-spike-test');
       return jsonResponse(200, { id: 'th_1' });
     });
     const client = makeClient(fetchImpl as unknown as typeof fetch);

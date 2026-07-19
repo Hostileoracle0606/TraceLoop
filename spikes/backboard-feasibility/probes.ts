@@ -18,7 +18,7 @@ export const probes: Record<string, Probe> = {
     const intent = ledger.recordIntent({ kind: 'assistant', probe: 'P1', name: 'traceloop-spike-P1-assistant' });
     const assistant = await client.post<{ id: string }>(ENDPOINTS.assistants, {
       name: 'traceloop-spike-P1-assistant',
-      instructions: 'You are a spike fixture. Answer briefly.',
+      system_prompt: 'You are a spike fixture. Answer briefly.',
     });
     ledger.confirm(intent.intentId, assistant.id);
     recorder.step('create-assistant', { response: assistant });
@@ -39,7 +39,7 @@ export const probes: Record<string, Probe> = {
     const assistantIntent = ledger.recordIntent({ kind: 'assistant', probe: 'P2', name: 'traceloop-spike-P2-assistant' });
     const assistant = await client.post<{ id: string }>(ENDPOINTS.assistants, {
       name: 'traceloop-spike-P2-assistant',
-      instructions: 'You are a spike fixture.',
+      system_prompt: 'You are a spike fixture.',
     });
     ledger.confirm(assistantIntent.intentId, assistant.id);
 
@@ -76,7 +76,7 @@ export const probes: Record<string, Probe> = {
     const assistantIntent = ledger.recordIntent({ kind: 'assistant', probe: 'P3', name: 'traceloop-spike-P3-assistant' });
     const assistant = await client.post<{ id: string }>(ENDPOINTS.assistants, {
       name: 'traceloop-spike-P3-assistant',
-      instructions: 'You must call the submit_plan tool.',
+      system_prompt: 'You must call the submit_plan tool.',
       tools: [{
         type: 'function',
         function: {
@@ -142,14 +142,14 @@ export const probes: Record<string, Probe> = {
     const a1Intent = ledger.recordIntent({ kind: 'assistant', probe: 'P8', name: 'traceloop-spike-P8-a1' });
     const a1 = await client.post<{ id: string }>(ENDPOINTS.assistants, {
       name: 'traceloop-spike-P8-a1',
-      instructions: 'You are a spike fixture.',
+      system_prompt: 'You are a spike fixture.',
     });
     ledger.confirm(a1Intent.intentId, a1.id);
 
     const a2Intent = ledger.recordIntent({ kind: 'assistant', probe: 'P8', name: 'traceloop-spike-P8-a2' });
     const a2 = await client.post<{ id: string }>(ENDPOINTS.assistants, {
       name: 'traceloop-spike-P8-a2',
-      instructions: 'You are a spike fixture.',
+      system_prompt: 'You are a spike fixture.',
     });
     ledger.confirm(a2Intent.intentId, a2.id);
 

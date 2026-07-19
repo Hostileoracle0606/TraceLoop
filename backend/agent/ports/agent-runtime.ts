@@ -9,19 +9,35 @@ import type { FileOperation } from '../../llm/tools';
 
 export type AgentRuntimeName = 'legacy' | 'backboard';
 
+export type AgentTurnRequest = {
+  stage: 'turn';
+  taskId: string;
+  text: string;
+  files: Record<string, string>;
+  context: {
+    taskStatus: string;
+    iteration: number;
+    permissionProfile: string;
+    latestRootCause?: RootCause;
+    latestAssertion?: AcceptanceCriterion;
+  };
+};
+
 export type AgentStageRequest =
   | { stage: 'clarify'; taskId: string; intent: string; files: Record<string, string> }
   | { stage: 'plan'; taskId: string; intent: string; files: Record<string, string>;
       board: { name: string; mcu: string; architecture: string }; criteria: AcceptanceCriterion[] }
   | { stage: 'edit'; taskId: string; plan: Plan; files: Record<string, string>; rootCause?: RootCause }
   | { stage: 'propose-patch'; taskId: string; rootCause: RootCause; files: Record<string, string>;
-      assertion: AcceptanceCriterion };
+      assertion: AcceptanceCriterion }
+  | AgentTurnRequest;
 
 export type AgentStageResponse =
   | { kind: 'clarification'; questions: string[] | null }
   | { kind: 'plan'; plan: Plan }
   | { kind: 'operations'; operations: FileOperation[]; summary: string }
   | { kind: 'patch'; patch: PatchProposal }
+  | { kind: 'turn'; reply: string; action?: 'explain-failure' | 'approval-needed' | 'stop-task' | null }
   | { kind: 'tool-calls-required'; providerRunRef: string;
       toolCalls: Array<{ id: string; name: string; argumentsRaw: unknown }> };
 

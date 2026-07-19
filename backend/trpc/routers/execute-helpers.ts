@@ -25,6 +25,30 @@ export function validateExecuteState(status: TaskStatus): void {
 }
 
 // ---------------------------------------------------------------------------
+// Active task states (non-terminal — used by getActive query)
+// ---------------------------------------------------------------------------
+
+/**
+ * States considered "active" (non-terminal). A task in any of these states
+ * is a candidate for the "get active task" auto-load query.
+ */
+export const ACTIVE_TASK_STATES: readonly TaskStatus[] = [
+  'clarification-needed',
+  'planning',
+  'editing',
+  'building',
+  'simulating',
+  'analyzing',
+  'patching',
+  'rerunning',
+];
+
+/** Returns true if the status represents an active (non-terminal) task. */
+export function isActiveTask(status: TaskStatus): boolean {
+  return ACTIVE_TASK_STATES.includes(status);
+}
+
+// ---------------------------------------------------------------------------
 // Cost conversion: DB stores cents (integer), engine uses dollars (float).
 // ---------------------------------------------------------------------------
 

@@ -205,6 +205,53 @@ export const agentRouter = router({
     }),
 
   /**
+   * E7: Single turn-path mutation for typed input.
+   * Accepts user text, classifies intent, returns an honest reply from the agent.
+   * Replaces the canned delayed response with a real backend call.
+   */
+  turn: authenticatedProcedure
+    .input(z.object({
+      taskId: z.string().uuid(),
+      text: z.string().min(1, 'Turn text must not be empty'),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      const task = await ctx.db.query.tasks.findFirst({
+        where: eq(tasks.id, input.taskId),
+      });
+      if (!task) throw new Error('Task not found');
+
+      // Ownership check
+      const project = await ctx.db.query.projects.findFirst({
+        where: eq(projects.id, task.projectId),
+      });
+      if (!project || project.userId !== ctx.user.id) {
+        throw new Error('Access denied');
+      }
+
+      // FSM state check: reject terminal states
+      const terminalStates = ['completed', 'blocked', 'stopped'] as const;
+      if ((terminalStates as readonly string[]).includes(task.status)) {
+        throw new Error(
+          `Cannot submit turn: task is in '${task.status}' state`
+        );
+      }
+
+      const response = await resolveAgentRuntime(task).runStage({
+        stage: 'turn',
+        taskId: task.id,
+        text: input.text,
+        files: task.currentFiles ?? {},
+        context: {
+          taskStatus: task.status,
+          iteration: task.iteration,
+          permissionProfile: task.permissionProfile,
+        },
+      });
+      if (response.kind !== 'turn') throw new Error(`Unexpected stage response: ${response.kind}`);
+      return { reply: response.reply, action: response.action ?? null };
+    }),
+
+  /**
    * Patching state: propose a fix based on the causal engine's root cause.
    */
   patch: authenticatedProcedure
