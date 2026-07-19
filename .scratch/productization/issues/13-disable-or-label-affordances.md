@@ -4,9 +4,9 @@
 
 **Blocked by:** None — can start immediately.
 
-**Status:** ready-for-agent
+**Status:** complete
 
-- [ ] No control changes only the screen while implying a backend action.
-- [ ] Unimplemented flows are visibly disabled with a one-line reason (not silently inert).
+- [x] No control changes only the screen while implying a backend action.
+- [x] Unimplemented flows are visibly disabled with a one-line reason (not silently inert).
 
 Full contract: plan → Workstream D, Task D2.
