@@ -4,6 +4,7 @@
  * them. Amend here only — no inline paths anywhere else.
  */
 export const ENDPOINTS = {
+  models: '/models',
   assistants: '/assistants',
   assistant: (id: string) => `/assistants/${id}`,
   threads: '/threads',
