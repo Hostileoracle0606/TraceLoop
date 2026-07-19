@@ -306,7 +306,9 @@ export async function runStatefulAuthoringLoop(
     const patch = proposePatch(files, vm.rootCause.register, req.assertion.register);
     files = patch.files;
 
-    recordTransition('rerunning', 'patch-approved', 'user');
+    // Actor is 'system' for auto-approval (autonomous profile).
+    // Only 'user' when there's a real human approval (future: resume after pause).
+    recordTransition('rerunning', 'patch-approved', 'system');
 
     // --- State: rerunning → building ---
     recordTransition('building', 'iteration-started', 'system');
