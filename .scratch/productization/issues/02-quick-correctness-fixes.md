@@ -4,7 +4,7 @@
 
 **Blocked by:** None — can start immediately.
 
-**Status:** ready-for-agent
+**Status:** complete
 
 - [ ] `frontend` `tsc --noEmit` passes (the `main.c?raw` TS2307 is gone).
 - [ ] `drizzle-orm >= 0.45.2`; full test suite still green after the bump.
