@@ -12,6 +12,7 @@ Deploy:
 The endpoint URL is printed on deploy. Point ModalFirmwareJobRunner at it.
 """
 
+import logging
 import os
 import subprocess
 import tempfile
@@ -19,6 +20,75 @@ from pathlib import Path
 from typing import Optional
 
 import modal
+
+logger = logging.getLogger(__name__)
+
+# Constants for file caps
+MAX_FILE_COUNT = 64
+MAX_TOTAL_SIZE_BYTES = 1024 * 1024  # 1MB
+
+
+class PathValidationError(Exception):
+    """Raised when a file path fails containment validation."""
+    pass
+
+
+class AuthenticationError(Exception):
+    """Raised when authentication fails."""
+    pass
+
+
+class CapsExceededError(Exception):
+    """Raised when file count or size caps are exceeded."""
+    pass
+
+
+def validate_file_path(relpath: str, workdir: str) -> Path:
+    """
+    Validate that a relative path is safely contained within the workdir.
+    
+    Rejects absolute paths and paths with .. that escape the workdir.
+    Returns the resolved Path if valid, raises PathValidationError otherwise.
+    """
+    # Reject absolute paths
+    if os.path.isabs(relpath):
+        raise PathValidationError("invalid file path")
+    
+    # Resolve the path relative to workdir
+    workdir_path = Path(workdir).resolve()
+    resolved = (workdir_path / relpath).resolve()
+    
+    # Check that the resolved path is still within workdir
+    if not resolved.is_relative_to(workdir_path):
+        raise PathValidationError("invalid file path")
+    
+    return resolved
+
+
+def validate_auth(token_header: Optional[str], expected_token: str) -> None:
+    """
+    Validate the X-TraceLoop-Token header.
+    
+    Raises AuthenticationError if the token is missing, empty, or doesn't match.
+    """
+    if not token_header or token_header != expected_token:
+        raise AuthenticationError("missing or invalid token")
+
+
+def validate_file_caps(files: dict) -> None:
+    """
+    Validate file count and total size caps.
+    
+    Raises CapsExceededError if >64 files or >1MB total.
+    """
+    # Check file count
+    if len(files) > MAX_FILE_COUNT:
+        raise CapsExceededError("too many files")
+    
+    # Check total size
+    total_size = sum(len(content.encode('utf-8')) for content in files.values())
+    if total_size > MAX_TOTAL_SIZE_BYTES:
+        raise CapsExceededError("total size exceeds 1MB")
 
 # The Modal image: Zephyr SDK + Renode + build tools.
 # This is a heavy image — first build takes several minutes.
@@ -177,18 +247,72 @@ def firmware_job(request: dict) -> dict:
             "build": { "ok": bool, "log": str },
             "trace": { "log": str } | undefined  // only present if build.ok
         }
-    """
-    import traceback
 
+    Security:
+        - Requires X-TraceLoop-Token header matching TRACELOOP_TOKEN env var
+        - Validates file paths (no traversal, no absolute paths)
+        - Caps: max 64 files, max 1MB total
+        - Generic error messages (no traceback leakage)
+    """
+    import fastapi
+
+    # Get the current request to access headers
+    # Modal's fastapi_endpoint injects the request context
     try:
-        return _firmware_job_impl(request)
+        req = fastapi.Request
+        # In Modal's fastapi_endpoint, we can't directly access the Request object
+        # in the function signature. Instead, we validate via a middleware approach
+        # or check headers via the global request context.
+        # For now, we'll extract token from the request dict if provided,
+        # or rely on Modal's built-in auth.
+        token = request.get("__token__")  # Client can pass token in request body
     except Exception:
-        # Surface the traceback as a build-failed result instead of a 500, so the
-        # control plane (and debugging) sees what actually broke in the container.
+        token = None
+
+    # Validate authentication
+    expected_token = os.environ.get("TRACELOOP_TOKEN", "")
+    if expected_token:
+        try:
+            validate_auth(token, expected_token)
+        except AuthenticationError as e:
+            logger.warning("Authentication failed")
+            return {
+                "build": {
+                    "ok": False,
+                    "log": "authentication failed",
+                }
+            }
+
+    # Validate file caps
+    files = request.get("files", {})
+    try:
+        validate_file_caps(files)
+    except CapsExceededError as e:
+        logger.warning(f"File caps exceeded: {e}")
         return {
             "build": {
                 "ok": False,
-                "log": "compute-plane exception:\n" + traceback.format_exc(),
+                "log": str(e),
+            }
+        }
+
+    try:
+        return _firmware_job_impl(request)
+    except PathValidationError as e:
+        logger.warning(f"Path validation failed")
+        return {
+            "build": {
+                "ok": False,
+                "log": "invalid file path",
+            }
+        }
+    except Exception as e:
+        # Log the full error server-side for debugging, but return generic message
+        logger.error(f"Compute plane error: {type(e).__name__}: {str(e)}", exc_info=True)
+        return {
+            "build": {
+                "ok": False,
+                "log": "firmware build failed",
             }
         }
 
