@@ -1,10 +1,11 @@
 import { z } from 'zod';
-import { eq, desc } from 'drizzle-orm';
+import { and, eq, desc, sql } from 'drizzle-orm';
 import { router, authenticatedProcedure } from '../context';
 import { patches, tasks, projects, runs, activityLogs } from '../../db/schema';
 import { checkPermission } from '../../../src/engine/permissions';
 import { inngest, Events, type TaskRunEventData } from '../../inngest/client';
 import { buildResourceControls } from './execute-helpers';
+import { checkPipelineBudget } from '../../inngest/pipeline-guard';
 
 export const patchesRouter = router({
   // List patches for a task
@@ -149,8 +150,38 @@ export const patchesRouter = router({
       if (patch.status !== 'proposed') {
         throw new Error(`Cannot approve patch in ${patch.status} state`);
       }
+      if (task.status !== 'patching') {
+        throw new Error(`Cannot approve patch while task is in ${task.status} state`);
+      }
+      if (!project.boardId) throw new Error('Project has no board assigned');
 
-      // C3: Atomic transaction — approve patch, update task, create run, enqueue rerun
+      const [costRow] = await ctx.db
+        .select({ total: sql<number>`coalesce(sum(${runs.costUsd}), 0)` })
+        .from(runs)
+        .where(eq(runs.taskId, task.id));
+      const nextIteration = task.iteration + 1;
+      const budget = checkPipelineBudget(task, nextIteration, Number(costRow?.total ?? 0));
+      if (budget) {
+        await ctx.db.transaction(async (tx) => {
+          const [blocked] = await tx.update(tasks).set({ status: 'blocked', updatedAt: new Date() })
+            .where(and(eq(tasks.id, task.id), eq(tasks.status, 'patching'))).returning();
+          if (blocked) {
+            await tx.insert(activityLogs).values({
+              taskId: task.id,
+              fromState: 'patching',
+              toState: 'blocked',
+              reason: 'budget-exhausted',
+              actor: 'system',
+              iteration: task.iteration,
+              metadata: { budgetKind: budget.kind, budgetReason: budget.reason },
+            });
+          }
+        });
+        throw new Error(budget.reason);
+      }
+
+      // Atomic local state change. The external dispatch is handled immediately
+      // afterwards and has an explicit blocked recovery state on failure.
       const result = await ctx.db.transaction(async (tx) => {
         const updatedRows = await tx
           .update(patches)
@@ -159,15 +190,14 @@ export const patchesRouter = router({
             approvedBy: ctx.user.id,
             approvedAt: new Date(),
           })
-          .where(eq(patches.id, input.id))
+          .where(and(eq(patches.id, input.id), eq(patches.status, 'proposed')))
           .returning();
 
         const updated = updatedRows[0];
         if (!updated) throw new Error('Failed to update patch');
 
         // Update task: set status to 'rerunning', apply patched files, increment iteration
-        const nextIteration = task.iteration + 1;
-        await tx
+        const updatedTasks = await tx
           .update(tasks)
           .set({
             status: 'rerunning',
@@ -175,7 +205,13 @@ export const patchesRouter = router({
             iteration: nextIteration,
             updatedAt: new Date(),
           })
-          .where(eq(tasks.id, patch.taskId));
+          .where(and(
+            eq(tasks.id, patch.taskId),
+            eq(tasks.status, 'patching'),
+            eq(tasks.iteration, task.iteration),
+          ))
+          .returning();
+        if (!updatedTasks[0]) throw new Error('Task state changed before patch approval');
 
         // C3: Create a new run for the rerun
         const runInsert = await tx
@@ -215,15 +251,44 @@ export const patchesRouter = router({
         projectId: task.projectId,
         iteration: result.nextIteration,
         files: patch.filesAfterPatch,
-        boardId: project.boardId!,
+        boardId: project.boardId,
         acceptanceCriteria: task.acceptanceCriteria,
         resourceControls: buildResourceControls(task),
       };
 
-      await inngest.send({
-        name: Events.TASK_RUN_REQUESTED,
-        data: eventData,
-      });
+      try {
+        await inngest.send({
+          name: Events.TASK_RUN_REQUESTED,
+          data: eventData,
+        });
+      } catch (error) {
+        await ctx.db.transaction(async (tx) => {
+          await tx.update(runs).set({ status: 'error', analysisCompletedAt: new Date() })
+            .where(eq(runs.id, result.run.id));
+          const [blocked] = await tx.update(tasks).set({ status: 'blocked', updatedAt: new Date() })
+            .where(and(
+              eq(tasks.id, task.id),
+              eq(tasks.status, 'rerunning'),
+              eq(tasks.iteration, result.nextIteration),
+            )).returning();
+          if (blocked) {
+            await tx.insert(activityLogs).values({
+              taskId: task.id,
+              fromState: 'rerunning',
+              toState: 'blocked',
+              reason: 'rerun-dispatch-failed',
+              actor: 'system',
+              iteration: result.nextIteration,
+              metadata: {
+                patchId: patch.id,
+                runId: result.run.id,
+                error: error instanceof Error ? error.message : String(error),
+              },
+            });
+          }
+        });
+        throw new Error('Patch was applied, but the rerun could not be dispatched. The task is blocked and can be retried safely.');
+      }
 
       return result.updated;
     }),
@@ -266,17 +331,20 @@ export const patchesRouter = router({
             status: 'rejected',
             rejectionReason: input.reason,
           })
-          .where(eq(patches.id, input.id))
+          .where(and(eq(patches.id, input.id), eq(patches.status, 'proposed')))
           .returning();
+        if (!rejected) throw new Error('Patch was already decided');
 
         // C3: Set task status back to 'editing'
-        await tx
+        const [updatedTask] = await tx
           .update(tasks)
           .set({
             status: 'editing',
             updatedAt: new Date(),
           })
-          .where(eq(tasks.id, patch.taskId));
+          .where(and(eq(tasks.id, patch.taskId), eq(tasks.status, 'patching')))
+          .returning();
+        if (!updatedTask) throw new Error('Task state changed before patch rejection');
 
         // Record activity log
         await tx.insert(activityLogs).values({

@@ -1,16 +1,15 @@
 import { inngest, Events, type TaskRunEventData } from './client';
 import { modalClient, resolveBoardSlug } from '../modal-client';
 import { uploadArtifact } from '../storage';
-import { createSupabaseAdminClient } from '../supabase';
 import { db } from '../db';
 import { runs, tasks, activityLogs, patches } from '../db/schema';
-import { eq } from 'drizzle-orm';
+import { and, eq, ne, sql } from 'drizzle-orm';
 import { parseRenodeLog } from '@engine/renode-parser';
 import { analyze } from '@engine/analyze';
 import type { TraceEvent, Assertion } from '@engine/types';
 import type { RootCause } from '../llm/functions';
 import { resolveAgentRuntime } from '../agent/runtime-selection';
-import type { PermissionProfile } from '../db/schema';
+import { checkPipelineBudget, materializePatch } from './pipeline-guard';
 
 // Timeout constants (in milliseconds)
 const BUILD_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
@@ -81,353 +80,8 @@ function getStackTrace(error: unknown): string | undefined {
   return undefined;
 }
 
-/** Wait timeout for patch approval (24 hours). */
-const PATCH_APPROVAL_TIMEOUT_MS = 24 * 60 * 60 * 1000;
-
 /**
- * Check whether the iteration budget is exhausted.
- */
-function isBudgetExhausted(iteration: number, maxIterations: number): boolean {
-  return iteration >= maxIterations;
-}
-
-/**
- * The core pipeline handler — extracted for testability.
- * Implements the full authoring loop:
- *   build → [build-fail → editing → LLM fix → re-enqueue] →
- *   simulate → analyze → [pass → completed | fail → propose-patch →
- *     autonomous: auto-apply + re-enqueue |
- *     review/guided: wait for PATCH_APPROVED → apply + re-enqueue]
- */
-/** Minimal step interface for the pipeline handler (testable without full Inngest types). */
-export interface PipelineStep {
-  run: <T>(id: string, fn: () => Promise<T>) => Promise<T>;
-  waitForEvent: (id: string, opts: { event: string; timeout: number; match?: string }) => Promise<{ data: Record<string, unknown> } | null>;
-}
-
-export async function pipelineHandler(
-  data: TaskRunEventData,
-  step: PipelineStep,
-): Promise<Record<string, unknown>> {
-  const startTime = Date.now();
-  const maxIterations = data.resourceControls.maxIterations;
-
-  // ── Step 1: Firmware Job (build + simulate on Modal) ───────────
-  let jobResult: Awaited<ReturnType<typeof modalClient.runJob>>;
-  try {
-    jobResult = await step.run('firmware-job', async () => {
-      await updateRunStatus(data.runId, 'building');
-      const boardSlug = await resolveBoardSlug(data.boardId);
-      const result = await modalClient.runJob({
-        files: data.files,
-        board: boardSlug,
-      });
-      // Upload build log
-      if (result.build.log) {
-        await uploadArtifact(data.taskId, data.runId, 'build.log', result.build.log, 'text/plain');
-      }
-      return result;
-    });
-  } catch (error) {
-    const failureType = classifyFailure(error, 'firmware-job');
-    const errorMessage = error instanceof Error ? error.message : String(error);
-
-    await step.run('handle-firmware-job-error', async () => {
-      await updateRunStatus(data.runId, 'failed');
-      await updateTaskStatus(data.taskId, 'blocked');
-      await logActivity(data.taskId, 'building', 'blocked', failureType, data.iteration, {
-        failureType,
-        errorMessage,
-        ...(failureType === 'infra-failure' ? { stackTrace: getStackTrace(error) } : {}),
-      });
-    });
-
-    return {
-      status: 'error',
-      failureType,
-      errorMessage,
-      stage: 'firmware-job',
-      elapsedMs: Date.now() - startTime,
-    };
-  }
-
-  // ── Handle build failure (authoring loop: editing → LLM fix → re-enqueue) ──
-  if (!jobResult.build.ok) {
-    // Budget check: if we've exhausted iterations, go to blocked
-    if (isBudgetExhausted(data.iteration, maxIterations)) {
-      await step.run('handle-build-failure-budget', async () => {
-        await updateRunStatus(data.runId, 'failed');
-        await updateTaskStatus(data.taskId, 'blocked');
-        await logActivity(data.taskId, 'building', 'blocked', 'budget-exhausted', data.iteration, {
-          buildLog: jobResult.build.log,
-          iteration: data.iteration,
-          maxIterations,
-        });
-      });
-      return { status: 'blocked', stage: 'build', reason: 'budget-exhausted', elapsedMs: Date.now() - startTime };
-    }
-
-    // Under budget: transition to editing, call LLM to fix, re-enqueue
-    const fixResult = await step.run('handle-build-failure-fix', async () => {
-      await updateRunStatus(data.runId, 'failed');
-      await updateTaskStatus(data.taskId, 'editing');
-      await logActivity(data.taskId, 'building', 'editing', 'build-failed', data.iteration, { buildLog: jobResult.build.log });
-
-      const task = await db.query.tasks.findFirst({ where: eq(tasks.id, data.taskId) });
-      if (!task) throw new Error('Task not found');
-
-      // Call LLM edit stage with build log as context
-      const stageResponse = await resolveAgentRuntime(task).runStage({
-        stage: 'edit',
-        taskId: data.taskId,
-        plan: { steps: [{ file: 'src/main.c', action: 'modify', description: `Fix build error: ${jobResult.build.log.slice(0, 200)}` }], summary: 'Fix build error' },
-        files: data.files,
-        rootCause: undefined,
-      });
-
-      if (stageResponse.kind !== 'operations') {
-        throw new Error(`Unexpected stage response for build fix: ${stageResponse.kind}`);
-      }
-
-      // Apply file operations to produce fixed files
-      const fixedFiles = { ...data.files };
-      for (const op of stageResponse.operations) {
-        if (op.type === 'edit') {
-          const existing = fixedFiles[op.path];
-          if (existing !== undefined) {
-            fixedFiles[op.path] = existing.replace(op.search, op.replace);
-          }
-        } else if (op.type === 'write') {
-          fixedFiles[op.path] = op.content;
-        }
-      }
-
-      // Update task with fixed files
-      await db.update(tasks).set({
-        currentFiles: fixedFiles,
-        status: 'rerunning',
-        iteration: data.iteration + 1,
-        updatedAt: new Date(),
-      }).where(eq(tasks.id, data.taskId));
-
-      // Re-enqueue with iteration+1
-      await inngest.send({
-        name: Events.TASK_RUN_REQUESTED,
-        data: { ...data, iteration: data.iteration + 1, files: fixedFiles },
-      });
-
-      return { fixedFiles };
-    });
-
-    return { status: 'build-fixed', stage: 'build', iteration: data.iteration + 1, elapsedMs: Date.now() - startTime };
-  }
-
-  // Upload trace log if present
-  if (jobResult.trace?.log) {
-    await step.run('upload-trace', async () => {
-      await uploadArtifact(data.taskId, data.runId, 'trace.log', jobResult.trace!.log, 'text/plain');
-    });
-  }
-
-  // ── Step 2: Analyze locally ────────────────────────────────────
-  let analyzeResult: { status: 'passed' | 'failed'; rootCauseText?: string; rootCause?: TraceEvent; assertion?: Assertion };
-  try {
-    analyzeResult = await step.run('analyze-results', async () => {
-      await updateRunStatus(data.runId, 'analyzing');
-      await updateTaskStatus(data.taskId, 'analyzing');
-
-      return analyzeTraceStep(
-        jobResult.trace?.log ?? '',
-        data.acceptanceCriteria,
-      );
-    });
-  } catch (error) {
-    const failureType = classifyFailure(error, 'analyze-results');
-    const errorMessage = error instanceof Error ? error.message : String(error);
-
-    await step.run('handle-analyze-error', async () => {
-      await updateRunStatus(data.runId, 'failed');
-      await updateTaskStatus(data.taskId, 'blocked');
-      await logActivity(data.taskId, 'analyzing', 'blocked', failureType, data.iteration, {
-        failureType,
-        errorMessage,
-        ...(failureType === 'infra-failure' ? { stackTrace: getStackTrace(error) } : {}),
-      });
-    });
-
-    return {
-      status: 'error',
-      failureType,
-      errorMessage,
-      stage: 'analyze-results',
-      elapsedMs: Date.now() - startTime,
-    };
-  }
-
-  // ── Handle test failure (authoring loop: propose-patch → branch by profile) ─
-  if (analyzeResult.status === 'failed') {
-    const patchResult = await step.run('propose-patch', async () => {
-      const task = await db.query.tasks.findFirst({ where: eq(tasks.id, data.taskId) });
-      if (!task) throw new Error('Task not found');
-
-      const rootCause = analyzeResult.rootCause;
-      const assertion = analyzeResult.assertion ?? data.acceptanceCriteria[0];
-
-      if (rootCause && assertion) {
-        const stageResponse = await resolveAgentRuntime(task).runStage({
-          stage: 'propose-patch',
-          taskId: data.taskId,
-          rootCause: rootCause as unknown as RootCause,
-          files: data.files,
-          assertion,
-        });
-        if (stageResponse.kind !== 'patch') throw new Error(`Unexpected stage response: ${stageResponse.kind}`);
-        const patchProposal = stageResponse.patch;
-
-        // Persist patch
-        const [patch] = await db.insert(patches).values({
-          taskId: data.taskId,
-          runId: data.runId,
-          file: patchProposal.file,
-          before: patchProposal.before,
-          after: patchProposal.after,
-          summary: patchProposal.summary,
-          filesAfterPatch: { ...data.files, [patchProposal.file]: data.files[patchProposal.file]?.replace(patchProposal.before, patchProposal.after) ?? patchProposal.after },
-          status: 'proposed',
-        }).returning();
-
-        await updateTaskStatus(data.taskId, 'patching');
-        await logActivity(data.taskId, 'analyzing', 'patching', 'criteria-failed', data.iteration, { patchId: patch?.id, rootCause: analyzeResult.rootCauseText });
-
-        return { patch, task, patchProposal };
-      } else {
-        // No root cause or assertion — can't patch
-        await updateTaskStatus(data.taskId, 'blocked');
-        await logActivity(data.taskId, 'analyzing', 'blocked', 'no-progress', data.iteration);
-        return { patch: null, task, patchProposal: null };
-      }
-    });
-
-    // If no patch was created, we're already blocked
-    if (!patchResult.patch || !patchResult.patchProposal) {
-      return { status: 'blocked', stage: 'analysis', reason: 'no-progress', elapsedMs: Date.now() - startTime };
-    }
-
-    const { patch, task, patchProposal } = patchResult;
-    const profile = task.permissionProfile as PermissionProfile;
-
-    // Budget check before re-enqueue
-    if (isBudgetExhausted(data.iteration, maxIterations)) {
-      await step.run('check-patch-budget', async () => {
-        await updateTaskStatus(data.taskId, 'blocked');
-        await logActivity(data.taskId, 'patching', 'blocked', 'budget-exhausted', data.iteration, {
-          iteration: data.iteration,
-          maxIterations,
-        });
-      });
-      return { status: 'blocked', stage: 'patching', reason: 'budget-exhausted', elapsedMs: Date.now() - startTime };
-    }
-
-    // Branch by permission profile
-    if (profile === 'autonomous') {
-      // Auto-apply and re-enqueue
-      await step.run('auto-apply-patch', async () => {
-        await db.update(patches).set({ status: 'approved', approvedAt: new Date() }).where(eq(patches.id, patch.id));
-
-        await db.update(tasks).set({
-          currentFiles: patch.filesAfterPatch,
-          status: 'rerunning',
-          iteration: data.iteration + 1,
-          updatedAt: new Date(),
-        }).where(eq(tasks.id, data.taskId));
-
-        await inngest.send({
-          name: Events.TASK_RUN_REQUESTED,
-          data: { ...data, iteration: data.iteration + 1, files: patch.filesAfterPatch },
-        });
-      });
-
-      return { status: 'patched', stage: 'analysis', profile: 'autonomous', iteration: data.iteration + 1, elapsedMs: Date.now() - startTime };
-    } else {
-      // review or guided: wait for PATCH_APPROVED event
-      const approvalEvent = await step.waitForEvent('wait-for-patch-approval', {
-        event: Events.PATCH_APPROVED,
-        timeout: PATCH_APPROVAL_TIMEOUT_MS,
-        match: `async.data.patchId == '${patch.id}'`,
-      });
-
-      if (!approvalEvent) {
-        // Timeout — transition to blocked
-        await step.run('handle-approval-timeout', async () => {
-          await updateTaskStatus(data.taskId, 'blocked');
-          await logActivity(data.taskId, 'patching', 'blocked', 'approval-timeout', data.iteration, { patchId: patch.id });
-        });
-        return { status: 'blocked', stage: 'patching', reason: 'approval-timeout', elapsedMs: Date.now() - startTime };
-      }
-
-      // Approved — apply patch and re-enqueue
-      await step.run('apply-approved-patch', async () => {
-        await db.update(patches).set({
-          status: 'approved',
-          approvedAt: new Date(),
-          approvedBy: approvalEvent.data.approvedBy as string,
-        }).where(eq(patches.id, patch.id));
-
-        await db.update(tasks).set({
-          currentFiles: patch.filesAfterPatch,
-          status: 'rerunning',
-          iteration: data.iteration + 1,
-          updatedAt: new Date(),
-        }).where(eq(tasks.id, data.taskId));
-
-        await inngest.send({
-          name: Events.TASK_RUN_REQUESTED,
-          data: { ...data, iteration: data.iteration + 1, files: patch.filesAfterPatch },
-        });
-      });
-
-      return { status: 'patched', stage: 'analysis', profile, iteration: data.iteration + 1, elapsedMs: Date.now() - startTime };
-    }
-  }
-
-  // ── Finalize (all criteria passed) ─────────────────────────────
-  await step.run('finalize-run', async () => {
-    const supabase = createSupabaseAdminClient();
-    const { error } = await supabase
-      .from('runs')
-      .update({
-        status: 'passed',
-        build_ok: jobResult.build.ok,
-        build_log: jobResult.build.log,
-        trace_log: jobResult.trace?.log ?? null,
-        analysis_result: analyzeResult,
-        elapsed_ms: Date.now() - startTime,
-        analysis_completed_at: new Date().toISOString(),
-      })
-      .eq('id', data.runId);
-
-    if (error) throw new Error(`Failed to update run: ${error.message}`);
-
-    await updateTaskStatus(data.taskId, 'completed');
-    await logActivity(
-      data.taskId,
-      'analyzing',
-      'completed',
-      'all-criteria-met',
-      data.iteration,
-      { rootCause: analyzeResult.rootCauseText }
-    );
-  });
-
-  return {
-    status: analyzeResult.status,
-    elapsedMs: Date.now() - startTime,
-    rootCause: analyzeResult.rootCauseText,
-  };
-}
-
-/**
- * Main pipeline function: build → simulate → analyze → [authoring loop]
+ * Main pipeline function: build → simulate → analyze
  * Triggered by task/run.requested event.
  * Uses Inngest's durable execution for automatic retries and state persistence.
  */
@@ -445,7 +99,349 @@ export const firmwareRunPipeline = inngest.createFunction(
   },
   async ({ event, step }) => {
     const data = event.data as TaskRunEventData;
-    return pipelineHandler(data, step as unknown as PipelineStep);
+    const startTime = Date.now();
+
+    const authorization = await step.run('authorize-attempt', async () => {
+      const task = await db.query.tasks.findFirst({ where: eq(tasks.id, data.taskId) });
+      if (!task) throw new Error('Task not found');
+      if (task.status === 'stopped') return { allowed: false as const, reason: 'task-stopped' };
+      if (!['building', 'rerunning'].includes(task.status)) {
+        return { allowed: false as const, reason: `task-not-runnable:${task.status}` };
+      }
+      if (task.iteration !== data.iteration) {
+        return { allowed: false as const, reason: 'stale-iteration' };
+      }
+
+      const run = await db.query.runs.findFirst({ where: eq(runs.id, data.runId) });
+      if (!run || run.taskId !== data.taskId || run.iteration !== data.iteration) {
+        return { allowed: false as const, reason: 'invalid-run' };
+      }
+
+      const accumulatedCostCents = await getAccumulatedCostCents(data.taskId);
+      const budget = checkPipelineBudget(task, data.iteration, accumulatedCostCents);
+      if (budget) {
+        await updateRun(data.runId, { status: 'failed', analysisCompletedAt: new Date() });
+        await transitionTask(data.taskId, task.status, 'blocked', 'budget-exhausted', data.iteration, {
+          budgetKind: budget.kind,
+          budgetReason: budget.reason,
+        });
+        return { allowed: false as const, reason: budget.reason };
+      }
+
+      return { allowed: true as const };
+    });
+
+    if (!authorization.allowed) {
+      return { status: 'skipped' as const, reason: authorization.reason, elapsedMs: Date.now() - startTime };
+    }
+
+    // ── Step 1: Firmware Job (build + simulate on Modal) ───────────
+    let jobResult: Awaited<ReturnType<typeof modalClient.runJob>>;
+    try {
+      jobResult = await step.run('firmware-job', async () => {
+        await updateRunStatus(data.runId, 'building');
+        const task = await db.query.tasks.findFirst({ where: eq(tasks.id, data.taskId) });
+        if (!task) throw new Error('Task not found');
+        if (task.status === 'rerunning') {
+          await transitionTask(data.taskId, 'rerunning', 'building', 'rerun-started', data.iteration);
+        }
+        const boardSlug = await resolveBoardSlug(data.boardId);
+        const result = await modalClient.runJob({
+          files: data.files,
+          board: boardSlug,
+        });
+        // Upload build log
+        if (result.build.log) {
+          await uploadArtifact(data.taskId, data.runId, 'build.log', result.build.log, 'text/plain');
+        }
+        return result;
+      });
+    } catch (error) {
+      const failureType = classifyFailure(error, 'firmware-job');
+      const errorMessage = error instanceof Error ? error.message : String(error);
+
+      await step.run('handle-firmware-job-error', async () => {
+        await updateRunStatus(data.runId, 'failed');
+        const task = await db.query.tasks.findFirst({ where: eq(tasks.id, data.taskId) });
+        if (!task) throw new Error('Task not found');
+        await transitionTask(data.taskId, task.status, 'blocked', failureType, data.iteration, {
+          failureType,
+          errorMessage,
+          ...(failureType === 'infra-failure' ? { stackTrace: getStackTrace(error) } : {}),
+        });
+      });
+
+      return {
+        status: 'error' as const,
+        failureType,
+        errorMessage,
+        stage: 'firmware-job',
+        elapsedMs: Date.now() - startTime,
+      };
+    }
+
+    // ── Handle build failure (authoring loop entry) ────────────────
+    if (!jobResult.build.ok) {
+      const buildFailure = await step.run('handle-build-failure', async () => {
+        await updateRun(data.runId, {
+          status: 'failed',
+          buildOk: false,
+          buildLog: jobResult.build.log,
+          ...costUpdate(jobResult.usage?.costUsd),
+          elapsedMs: Date.now() - startTime,
+          analysisCompletedAt: new Date(),
+        });
+        const task = await db.query.tasks.findFirst({ where: eq(tasks.id, data.taskId) });
+        if (!task) throw new Error('Task not found');
+        const budget = checkPipelineBudget(
+          task,
+          data.iteration + 1,
+          await getAccumulatedCostCents(data.taskId),
+        );
+        if (budget) {
+          await transitionTask(data.taskId, task.status, 'blocked', 'budget-exhausted', data.iteration, {
+            budgetKind: budget.kind,
+            budgetReason: budget.reason,
+            buildLog: jobResult.build.log,
+          });
+          return { blocked: true as const, reason: budget.reason };
+        }
+
+        const moved = await transitionTask(data.taskId, task.status, 'editing', 'build-failed', data.iteration, {
+          buildLog: jobResult.build.log,
+        });
+        return { blocked: false as const, stopped: !moved };
+      });
+
+      if (buildFailure.blocked || buildFailure.stopped) {
+        return {
+          status: buildFailure.blocked ? 'blocked' as const : 'stopped' as const,
+          stage: 'build',
+          buildLog: jobResult.build.log,
+          elapsedMs: Date.now() - startTime,
+        };
+      }
+
+      let proposed: Awaited<ReturnType<typeof persistProposedPatch>>;
+      try {
+        proposed = await step.run('propose-build-repair', async () => {
+          const task = await db.query.tasks.findFirst({ where: eq(tasks.id, data.taskId) });
+          if (!task || task.status !== 'editing') throw new Error('Task is not available for build repair');
+          const response = await resolveAgentRuntime(task).runStage({
+            stage: 'repair-build',
+            taskId: data.taskId,
+            buildLog: jobResult.build.log,
+            files: data.files,
+          });
+          if (response.kind !== 'patch') throw new Error(`Unexpected stage response: ${response.kind}`);
+          return persistProposedPatch({
+            taskId: data.taskId,
+            runId: data.runId,
+            iteration: data.iteration,
+            fromState: 'editing',
+            reason: 'build-repair-proposed',
+            files: data.files,
+            proposal: response.patch,
+          });
+        });
+      } catch (error) {
+        await step.run('handle-build-repair-error', async () => {
+          await transitionTask(data.taskId, 'editing', 'blocked', 'agent-repair-failed', data.iteration, {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+        return { status: 'error' as const, stage: 'build-repair', errorMessage: error instanceof Error ? error.message : String(error), elapsedMs: Date.now() - startTime };
+      }
+
+      if (proposed.permissionProfile !== 'autonomous') {
+        return { status: 'awaiting-approval' as const, stage: 'build', patchId: proposed.patchId, elapsedMs: Date.now() - startTime };
+      }
+
+      const rerunEvent = await step.run('apply-build-repair', () => approveAndPrepareRerun({
+        patchId: proposed.patchId,
+        taskId: data.taskId,
+        currentIteration: data.iteration,
+        userId: data.userId,
+        projectId: data.projectId,
+        boardId: data.boardId,
+        acceptanceCriteria: data.acceptanceCriteria,
+        resourceControls: data.resourceControls,
+        actor: 'agent',
+      }));
+      await step.sendEvent('enqueue-build-repair-rerun', { name: Events.TASK_RUN_REQUESTED, data: rerunEvent });
+      return { status: 'rerunning' as const, stage: 'build', patchId: proposed.patchId, elapsedMs: Date.now() - startTime };
+    }
+
+    // Upload trace log if present
+    if (jobResult.trace?.log) {
+      await step.run('upload-trace', async () => {
+        await uploadArtifact(data.taskId, data.runId, 'trace.log', jobResult.trace!.log, 'text/plain');
+      });
+    }
+
+    // ── Step 2: Analyze locally ────────────────────────────────────
+    let analyzeResult: { status: 'passed' | 'failed'; rootCauseText?: string; rootCause?: TraceEvent; assertion?: Assertion };
+    try {
+      analyzeResult = await step.run('analyze-results', async () => {
+        await updateRunStatus(data.runId, 'analyzing');
+        const task = await db.query.tasks.findFirst({ where: eq(tasks.id, data.taskId) });
+        if (!task) throw new Error('Task not found');
+        if (task.status !== 'analyzing') {
+          await transitionTask(data.taskId, task.status, 'analyzing', 'simulation-complete', data.iteration);
+        }
+
+        return analyzeTraceStep(
+          jobResult.trace?.log ?? '',
+          data.acceptanceCriteria,
+        );
+      });
+    } catch (error) {
+      const failureType = classifyFailure(error, 'analyze-results');
+      const errorMessage = error instanceof Error ? error.message : String(error);
+
+      await step.run('handle-analyze-error', async () => {
+        await updateRunStatus(data.runId, 'failed');
+        const task = await db.query.tasks.findFirst({ where: eq(tasks.id, data.taskId) });
+        if (!task) throw new Error('Task not found');
+        await transitionTask(data.taskId, task.status, 'blocked', failureType, data.iteration, {
+          failureType,
+          errorMessage,
+          ...(failureType === 'infra-failure' ? { stackTrace: getStackTrace(error) } : {}),
+        });
+      });
+
+      return {
+        status: 'error' as const,
+        failureType,
+        errorMessage,
+        stage: 'analyze-results',
+        elapsedMs: Date.now() - startTime,
+      };
+    }
+
+    // ── Handle test failure (authoring loop entry) ─────────────────
+    if (analyzeResult.status === 'failed') {
+      const failureGate = await step.run('record-test-failure', async () => {
+        await updateRun(data.runId, {
+          status: 'failed',
+          buildOk: true,
+          buildLog: jobResult.build.log,
+          traceLog: jobResult.trace?.log ?? null,
+          analysisResult: analyzeResult,
+          ...costUpdate(jobResult.usage?.costUsd),
+          elapsedMs: Date.now() - startTime,
+          analysisCompletedAt: new Date(),
+        });
+        const task = await db.query.tasks.findFirst({ where: eq(tasks.id, data.taskId) });
+        if (!task) throw new Error('Task not found');
+        const budget = checkPipelineBudget(
+          task,
+          data.iteration + 1,
+          await getAccumulatedCostCents(data.taskId),
+        );
+        if (budget) {
+          await transitionTask(data.taskId, task.status, 'blocked', 'budget-exhausted', data.iteration, {
+            budgetKind: budget.kind,
+            budgetReason: budget.reason,
+            rootCause: analyzeResult.rootCauseText,
+          });
+          return { blocked: true as const, reason: budget.reason };
+        }
+        return { blocked: false as const };
+      });
+
+      if (failureGate.blocked) {
+        return { status: 'blocked' as const, stage: 'analysis', rootCause: analyzeResult.rootCauseText, elapsedMs: Date.now() - startTime };
+      }
+
+      let proposed: Awaited<ReturnType<typeof persistProposedPatch>> | null;
+      try {
+        proposed = await step.run('propose-patch', async () => {
+          const task = await db.query.tasks.findFirst({ where: eq(tasks.id, data.taskId) });
+          if (!task || task.status !== 'analyzing') throw new Error('Task is not available for patching');
+
+          const rootCause = analyzeResult.rootCause;
+          // The criterion that actually failed and produced rootCause — may not be
+          // acceptanceCriteria[0] when earlier criteria passed and a later one didn't.
+          const assertion = analyzeResult.assertion ?? data.acceptanceCriteria[0];
+
+          if (rootCause && assertion) {
+            const stageResponse = await resolveAgentRuntime(task).runStage({
+              stage: 'propose-patch',
+              taskId: data.taskId,
+              rootCause: rootCause as unknown as RootCause,
+              files: data.files,
+              assertion,
+            });
+            if (stageResponse.kind !== 'patch') throw new Error(`Unexpected stage response: ${stageResponse.kind}`);
+            return persistProposedPatch({
+              taskId: data.taskId,
+              runId: data.runId,
+              iteration: data.iteration,
+              fromState: 'analyzing',
+              reason: 'criteria-failed',
+              files: data.files,
+              proposal: stageResponse.patch,
+              metadata: { rootCause: analyzeResult.rootCauseText },
+            });
+          }
+
+          await transitionTask(data.taskId, 'analyzing', 'blocked', 'no-progress', data.iteration);
+          return null;
+        });
+      } catch (error) {
+        await step.run('handle-patch-proposal-error', async () => {
+          await transitionTask(data.taskId, 'analyzing', 'blocked', 'agent-repair-failed', data.iteration, {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+        return { status: 'error' as const, stage: 'patch-proposal', errorMessage: error instanceof Error ? error.message : String(error), elapsedMs: Date.now() - startTime };
+      }
+
+      if (!proposed) {
+        return { status: 'blocked' as const, stage: 'analysis', rootCause: analyzeResult.rootCauseText, elapsedMs: Date.now() - startTime };
+      }
+      if (proposed.permissionProfile !== 'autonomous') {
+        return { status: 'awaiting-approval' as const, stage: 'analysis', patchId: proposed.patchId, rootCause: analyzeResult.rootCauseText, elapsedMs: Date.now() - startTime };
+      }
+
+      const rerunEvent = await step.run('apply-causal-patch', () => approveAndPrepareRerun({
+        patchId: proposed.patchId,
+        taskId: data.taskId,
+        currentIteration: data.iteration,
+        userId: data.userId,
+        projectId: data.projectId,
+        boardId: data.boardId,
+        acceptanceCriteria: data.acceptanceCriteria,
+        resourceControls: data.resourceControls,
+        actor: 'agent',
+      }));
+      await step.sendEvent('enqueue-causal-rerun', { name: Events.TASK_RUN_REQUESTED, data: rerunEvent });
+      return { status: 'rerunning' as const, stage: 'analysis', patchId: proposed.patchId, rootCause: analyzeResult.rootCauseText, elapsedMs: Date.now() - startTime };
+    }
+
+    // ── Finalize (all criteria passed) ─────────────────────────────
+    await step.run('finalize-run', async () => {
+      await updateRun(data.runId, {
+        status: 'passed',
+        buildOk: jobResult.build.ok,
+        buildLog: jobResult.build.log,
+        traceLog: jobResult.trace?.log ?? null,
+        analysisResult: analyzeResult,
+        ...costUpdate(jobResult.usage?.costUsd),
+        elapsedMs: Date.now() - startTime,
+        analysisCompletedAt: new Date(),
+      });
+      await transitionTask(data.taskId, 'analyzing', 'completed', 'all-criteria-met', data.iteration, {
+        rootCause: analyzeResult.rootCauseText,
+      });
+    });
+
+    return {
+      status: analyzeResult.status,
+      elapsedMs: Date.now() - startTime,
+      rootCause: analyzeResult.rootCauseText,
+    };
   }
 );
 
@@ -461,18 +457,14 @@ export const cancelFirmwareRun = inngest.createFunction(
     const { taskId, runId, reason } = event.data;
 
     await step.run('mark-cancelled', async () => {
-      // Mark run as 'cancelled' (not 'error') — cancellation is intentional
       await updateRunStatus(runId, 'cancelled');
-      await updateTaskStatus(taskId, 'stopped');
-      await logActivity(taskId, 'building', 'stopped', 'user-cancelled', 0, {
-        reason: reason ?? 'user-cancelled',
-        cancellationMetadata: {
-          cancelledAt: new Date().toISOString(),
+      const task = await db.query.tasks.findFirst({ where: eq(tasks.id, taskId) });
+      if (task && task.status !== 'stopped') {
+        await transitionTask(taskId, task.status, 'stopped', 'user-cancelled', task.iteration, {
           reason: reason ?? 'user-cancelled',
           runId,
-          taskId,
-        },
-      });
+        });
+      }
     });
 
     return { cancelled: true, runId, reason: reason ?? 'user-cancelled' };
@@ -481,108 +473,204 @@ export const cancelFirmwareRun = inngest.createFunction(
 
 // ── Helper functions ───────────────────────────────────────────────
 
-export async function updateRunStatus(
+async function updateRunStatus(
   runId: string,
   status: 'building' | 'simulating' | 'analyzing' | 'passed' | 'failed' | 'error' | 'cancelled'
 ) {
-  const supabase = createSupabaseAdminClient();
-  
-  // C2: Guard — don't update if task has been stopped
-  const { data: run, error: fetchError } = await supabase
-    .from('runs')
-    .select('task_id')
-    .eq('id', runId)
-    .single();
-  
-  if (fetchError || !run) {
-    throw new Error(`Failed to fetch run: ${fetchError?.message}`);
-  }
-  
-  const { data: task } = await supabase
-    .from('tasks')
-    .select('status')
-    .eq('id', run.task_id)
-    .single();
-  
-  if (task?.status === 'stopped') {
-    // Task was cancelled — skip status update
-    return;
-  }
-  
-  const updateData: Record<string, unknown> = { status };
-
-  if (status === 'building') updateData.build_started_at = new Date().toISOString();
-  if (status === 'simulating') updateData.build_completed_at = new Date().toISOString();
-  if (status === 'analyzing') updateData.sim_completed_at = new Date().toISOString();
-  if (['passed', 'failed', 'error', 'cancelled'].includes(status)) {
-    updateData.analysis_completed_at = new Date().toISOString();
-  }
-
-  const { error } = await supabase
-    .from('runs')
-    .update(updateData)
-    .eq('id', runId);
-
-  if (error) throw new Error(`Failed to update run status: ${error.message}`);
+  const updateData: Partial<typeof runs.$inferInsert> = { status };
+  if (status === 'building') updateData.buildStartedAt = new Date();
+  if (status === 'simulating') updateData.buildCompletedAt = new Date();
+  if (status === 'analyzing') updateData.simCompletedAt = new Date();
+  if (['passed', 'failed', 'error', 'cancelled'].includes(status)) updateData.analysisCompletedAt = new Date();
+  await updateRun(runId, updateData);
 }
 
-export async function updateTaskStatus(
-  taskId: string,
-  status: string
+async function updateRun(
+  runId: string,
+  values: Partial<typeof runs.$inferInsert>,
 ) {
-  const supabase = createSupabaseAdminClient();
-  
-  // C2: Guard — don't overwrite 'stopped' status (task was cancelled)
-  const { data: currentTask } = await supabase
-    .from('tasks')
-    .select('status')
-    .eq('id', taskId)
-    .single();
-  
-  if (currentTask?.status === 'stopped' && status !== 'stopped') {
-    // Task was cancelled — don't overwrite
-    return;
+  const predicate = values.status === 'cancelled'
+    ? eq(runs.id, runId)
+    : and(eq(runs.id, runId), ne(runs.status, 'cancelled'));
+  const [updated] = await db.update(runs).set(values).where(predicate).returning();
+  if (!updated) {
+    const existing = await db.query.runs.findFirst({ where: eq(runs.id, runId) });
+    if (existing?.status === 'cancelled') return existing;
+    throw new Error('Run not found');
   }
-  
-  const updateData: Record<string, unknown> = {
-    status,
-    updated_at: new Date().toISOString(),
-  };
-
-  if (status === 'completed' || status === 'stopped') {
-    updateData.completed_at = new Date().toISOString();
-  }
-
-  const { error } = await supabase
-    .from('tasks')
-    .update(updateData)
-    .eq('id', taskId);
-
-  if (error) throw new Error(`Failed to update task status: ${error.message}`);
+  return updated;
 }
 
-async function logActivity(
+async function transitionTask(
   taskId: string,
   fromState: string,
   toState: string,
   reason: string,
   iteration: number,
-  metadata?: Record<string, unknown>
+  metadata?: Record<string, unknown>,
 ) {
-  const supabase = createSupabaseAdminClient();
-  const { error } = await supabase
-    .from('activity_logs')
-    .insert({
-      task_id: taskId,
-      from_state: fromState,
-      to_state: toState,
+  if (fromState === 'stopped' && toState !== 'stopped') return false;
+  return db.transaction(async (tx) => {
+    const updateData: Partial<typeof tasks.$inferInsert> = { status: toState, updatedAt: new Date() };
+    if (toState === 'completed' || toState === 'stopped') updateData.completedAt = new Date();
+    const [updated] = await tx
+      .update(tasks)
+      .set(updateData)
+      .where(and(eq(tasks.id, taskId), eq(tasks.status, fromState)))
+      .returning();
+    if (!updated) return false;
+    await tx.insert(activityLogs).values({
+      taskId,
+      fromState,
+      toState,
       reason,
       actor: 'system',
       iteration,
       metadata: metadata ?? {},
     });
+    return true;
+  });
+}
 
-  if (error) throw new Error(`Failed to log activity: ${error.message}`);
+async function getAccumulatedCostCents(taskId: string): Promise<number> {
+  const [row] = await db
+    .select({ total: sql<number>`coalesce(sum(${runs.costUsd}), 0)` })
+    .from(runs)
+    .where(eq(runs.taskId, taskId));
+  return Number(row?.total ?? 0);
+}
+
+function costUpdate(costUsd: number | undefined): Pick<typeof runs.$inferInsert, 'costUsd'> | Record<string, never> {
+  if (costUsd === undefined || !Number.isFinite(costUsd) || costUsd < 0) return {};
+  return { costUsd: Math.round(costUsd * 100) };
+}
+
+async function persistProposedPatch(input: {
+  taskId: string;
+  runId: string;
+  iteration: number;
+  fromState: string;
+  reason: string;
+  files: Record<string, string>;
+  proposal: { file: string; before: string; after: string; summary: string; confidence: number };
+  metadata?: Record<string, unknown>;
+}) {
+  const filesAfterPatch = materializePatch(input.files, input.proposal);
+  return db.transaction(async (tx) => {
+    const task = await tx.query.tasks.findFirst({ where: eq(tasks.id, input.taskId) });
+    if (!task || task.status !== input.fromState) throw new Error('Task state changed before patch proposal');
+
+    const [patch] = await tx.insert(patches).values({
+      taskId: input.taskId,
+      runId: input.runId,
+      file: input.proposal.file,
+      before: input.proposal.before,
+      after: input.proposal.after,
+      summary: input.proposal.summary,
+      filesAfterPatch,
+      status: 'proposed',
+    }).returning();
+    if (!patch) throw new Error('Failed to persist patch');
+
+    const [updatedTask] = await tx.update(tasks).set({
+      status: 'patching',
+      updatedAt: new Date(),
+    }).where(and(eq(tasks.id, input.taskId), eq(tasks.status, input.fromState))).returning();
+    if (!updatedTask) throw new Error('Task state changed before patch proposal');
+
+    await tx.insert(activityLogs).values({
+      taskId: input.taskId,
+      fromState: input.fromState,
+      toState: 'patching',
+      reason: input.reason,
+      actor: 'agent',
+      iteration: input.iteration,
+      metadata: { ...input.metadata, patchId: patch.id, confidence: input.proposal.confidence },
+    });
+
+    return { patchId: patch.id, permissionProfile: task.permissionProfile };
+  });
+}
+
+async function approveAndPrepareRerun(input: {
+  patchId: string;
+  taskId: string;
+  currentIteration: number;
+  userId: string;
+  projectId: string;
+  boardId: string;
+  acceptanceCriteria: TaskRunEventData['acceptanceCriteria'];
+  resourceControls: TaskRunEventData['resourceControls'];
+  actor: 'agent' | 'user';
+}): Promise<TaskRunEventData> {
+  const task = await db.query.tasks.findFirst({ where: eq(tasks.id, input.taskId) });
+  const patch = await db.query.patches.findFirst({ where: eq(patches.id, input.patchId) });
+  if (!task || !patch) throw new Error('Task or patch not found');
+  if (task.status !== 'patching' || task.iteration !== input.currentIteration || patch.status !== 'proposed') {
+    throw new Error('Patch can no longer be applied');
+  }
+
+  const nextIteration = input.currentIteration + 1;
+  const budget = checkPipelineBudget(task, nextIteration, await getAccumulatedCostCents(input.taskId));
+  if (budget) {
+    await transitionTask(input.taskId, 'patching', 'blocked', 'budget-exhausted', input.currentIteration, {
+      budgetKind: budget.kind,
+      budgetReason: budget.reason,
+    });
+    throw new Error(budget.reason);
+  }
+
+  const result = await db.transaction(async (tx) => {
+    const [approved] = await tx.update(patches).set({
+      status: 'approved',
+      approvedBy: input.actor === 'user' ? input.userId : null,
+      approvedAt: new Date(),
+    }).where(and(eq(patches.id, input.patchId), eq(patches.status, 'proposed'))).returning();
+    if (!approved) throw new Error('Patch was already decided');
+
+    const [run] = await tx.insert(runs).values({
+      taskId: input.taskId,
+      iteration: nextIteration,
+      status: 'pending',
+    }).returning();
+    if (!run) throw new Error('Failed to create rerun');
+
+    const [updatedTask] = await tx.update(tasks).set({
+      currentFiles: patch.filesAfterPatch,
+      status: 'rerunning',
+      iteration: nextIteration,
+      updatedAt: new Date(),
+    }).where(and(
+      eq(tasks.id, input.taskId),
+      eq(tasks.status, 'patching'),
+      eq(tasks.iteration, input.currentIteration),
+    )).returning();
+    if (!updatedTask) throw new Error('Task state changed before patch approval');
+
+    await tx.insert(activityLogs).values({
+      taskId: input.taskId,
+      fromState: 'patching',
+      toState: 'rerunning',
+      reason: 'patch-approved',
+      actor: input.actor,
+      userId: input.actor === 'user' ? input.userId : null,
+      iteration: input.currentIteration,
+      metadata: { patchId: input.patchId, runId: run.id },
+    });
+    return run;
+  });
+
+  return {
+    taskId: input.taskId,
+    runId: result.id,
+    userId: input.userId,
+    projectId: input.projectId,
+    iteration: nextIteration,
+    files: patch.filesAfterPatch,
+    boardId: input.boardId,
+    acceptanceCriteria: input.acceptanceCriteria,
+    resourceControls: input.resourceControls,
+  };
 }
 
 // ── Pure analysis step (testable, no side effects) ─────────────────────
