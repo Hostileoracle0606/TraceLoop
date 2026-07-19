@@ -4,6 +4,7 @@ import { useMemo, useState, useCallback, createContext, useContext, useEffect } 
 import { runData, patch } from "./run";
 import firmwareSource from '../../firmware-zephyr/timer2-wrong-pin/src/main.c?raw';
 import { FSMIntegration } from './components/fsm';
+import { TaskAttentionBar } from './components/TaskAttentionBar';
 import { trpc } from './lib/trpc';
 import { deriveNotifications } from './lib/notifications';
 
@@ -624,15 +625,8 @@ function AgentWorkspace({ navigate, wizardConfig }: { navigate: (view: View) => 
 
   return (
     <div className="workspace-page agent-page">
-      {/* Task-attention bar */}
-      {task && (
-        <div className="task-attention-bar">
-          <span>{task.status}</span>
-          <span>· Iteration {task.iteration}</span>
-          <span>· {task.permissionProfile}</span>
-          <button onClick={() => taskId && stopMutation.mutate({ taskId })} disabled={stopMutation.isPending}>Stop</button>
-        </div>
-      )}
+      {/* Task-attention bar (E2) */}
+      <TaskAttentionBar taskId={taskId} onNavigate={(view) => navigate(view as View)} />
       <div className="ide-layout">
         <aside className="file-tree">
           <div className="file-tree-title"><strong>PROJECT</strong></div>
@@ -704,14 +698,7 @@ function RunProgress({ navigate }: { navigate: (view: View) => void }) {
   ] : [];
   return (
     <div className="page run-page">
-      {task && (
-        <div className="task-attention-bar">
-          <span>{task.status}</span>
-          <span>· Iteration {task.iteration}</span>
-          <span>· {task.permissionProfile}</span>
-          <button onClick={() => taskId && stopMutation.mutate({ taskId })} disabled={stopMutation.isPending}>Stop</button>
-        </div>
-      )}
+      <TaskAttentionBar taskId={taskId} onNavigate={(view) => navigate(view as View)} />
       <div className="page-heading compact-heading"><div><span className="eyebrow">Run · {newestRun?.id.slice(0, 8) || 'Loading'}</span><h1>Build & simulation</h1><p>Renode execution progress.</p></div><div className="heading-actions"><Badge tone={newestRun?.status === 'passed' ? 'green' : newestRun?.status === 'failed' ? 'red' : 'blue'}>{newestRun?.status || 'Running'}</Badge>{newestRun?.status === 'failed' && <Button onClick={() => navigate("analysis")}>Open failure analysis →</Button>}</div></div>
       <div className="run-layout">
         <Panel title="Execution pipeline" eyebrow="Completed in 41.8 seconds" className="pipeline-panel">
@@ -829,14 +816,7 @@ function FailureAnalysis({ navigate, taskId }: { navigate: (view: View) => void;
   const hasProposedPatch = patches && patches.length > 0 && patches.some(p => p.status === 'proposed');
   return (
     <div className="workspace-page analysis-page">
-      {task && (
-        <div className="task-attention-bar">
-          <span>{task.status}</span>
-          <span>· Iteration {task.iteration}</span>
-          <span>· {task.permissionProfile}</span>
-          <button onClick={() => taskId && stopMutation.mutate({ taskId })} disabled={stopMutation.isPending}>Stop</button>
-        </div>
-      )}
+      <TaskAttentionBar taskId={effectiveTaskId ?? null} onNavigate={(view) => navigate(view as View)} />
       <div className="run-topbar">
         <div className="run-identity"><Badge tone="red">Failed</Badge><div><strong>{runData.run.id}</strong><small>green_led_should_turn_on</small></div></div>
         <div className="run-meta"><span><small>Board</small>{runData.run.board}</span><span><small>Commit</small><code>{runData.run.commit}</code></span><span><small>Virtual time</small>2.000 ms</span><span><small>Trace events</small>1,284</span></div>
@@ -975,14 +955,7 @@ function PatchReview({ navigate }: { navigate: (view: View) => void }) {
 
   return (
     <div className="page patch-page">
-      {task && (
-        <div className="task-attention-bar">
-          <span>{task.status}</span>
-          <span>· Iteration {task.iteration}</span>
-          <span>· {task.permissionProfile}</span>
-          <button onClick={() => taskId && stopMutation.mutate({ taskId })} disabled={stopMutation.isPending}>Stop</button>
-        </div>
-      )}
+      <TaskAttentionBar taskId={taskId} onNavigate={(view) => navigate(view as View)} />
       <div className="page-heading compact-heading"><div><span className="eyebrow">Agent awaiting approval</span><h1>Review evidence-backed patch</h1><p>The agent cannot apply or rerun this change without your approval.</p></div><Badge tone="amber">Approval required</Badge></div>
       {approvalError && <div className="error-banner">{approvalError}</div>}
       {newestPatch ? (
