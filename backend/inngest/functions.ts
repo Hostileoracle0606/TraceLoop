@@ -5,10 +5,11 @@ import { createSupabaseAdminClient } from '../supabase';
 import { db } from '../db';
 import { runs, tasks, activityLogs, patches } from '../db/schema';
 import { eq } from 'drizzle-orm';
-import { proposePatchLLM } from '../llm/functions';
 import { parseRenodeLog } from '@engine/renode-parser';
 import { analyze } from '@engine/analyze';
 import type { TraceEvent, Assertion } from '@engine/types';
+import type { RootCause } from '../llm/functions';
+import { resolveAgentRuntime } from '../agent/runtime-selection';
 
 // Timeout constants (in milliseconds)
 const BUILD_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes
@@ -30,6 +31,12 @@ export type FailureType =
 
 /** Classifies an error into a FailureType based on its message/context. */
 export function classifyFailure(error: unknown, stage: 'firmware-job' | 'analyze-results'): FailureType {
+  // F5: AgentProviderError is always infrastructure — never a firmware/build/criteria failure.
+  // Use name check (not instanceof) to avoid importing from backend/agent/.
+  if (error instanceof Error && error.name === 'AgentProviderError') {
+    return 'infra-failure';
+  }
+
   const message = error instanceof Error ? error.message : String(error);
 
   if (stage === 'firmware-job') {
@@ -205,7 +212,15 @@ export const firmwareRunPipeline = inngest.createFunction(
         const assertion = analyzeResult.assertion ?? data.acceptanceCriteria[0];
 
         if (rootCause && assertion) {
-          const patchProposal = await proposePatchLLM(rootCause as unknown as Parameters<typeof proposePatchLLM>[0], data.files, assertion);
+          const stageResponse = await resolveAgentRuntime(task).runStage({
+            stage: 'propose-patch',
+            taskId: data.taskId,
+            rootCause: rootCause as unknown as RootCause,
+            files: data.files,
+            assertion,
+          });
+          if (stageResponse.kind !== 'patch') throw new Error(`Unexpected stage response: ${stageResponse.kind}`);
+          const patchProposal = stageResponse.patch;
 
           // Persist patch
           const [patch] = await db.insert(patches).values({

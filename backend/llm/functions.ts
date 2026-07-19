@@ -15,14 +15,14 @@ import { isProtectedFile } from '../../src/engine/permissions';
 
 // ── Shared types ───────────────────────────────────────────────────
 
-interface AcceptanceCriterion {
+export interface AcceptanceCriterion {
   name: string;
   register: string;
   expect: string;
   byTime: number;
 }
 
-interface RootCause {
+export interface RootCause {
   time: number;
   type: string;
   source: string;
@@ -62,12 +62,12 @@ const planStepSchema = z.object({
   description: z.string().min(1),
 });
 
-const planSchema = z.object({
+export const planSchema = z.object({
   steps: z.array(planStepSchema).min(1),
   summary: z.string().min(1),
 });
 
-const patchProposalSchema = z.object({
+export const patchProposalSchema = z.object({
   file: z.string().min(1),
   before: z.string(),
   after: z.string(),
