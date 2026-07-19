@@ -4,10 +4,10 @@
 
 **Blocked by:** None — can start immediately.
 
-**Status:** ready-for-agent
+**Status:** complete
 
-- [ ] Rejects: out-of-plan path, protected test file, `../` traversal, missing `search`, confidence `1.5`, malformed JSON.
-- [ ] `backend/llm/functions.ts` routes all outputs through the validators (no `as` casts).
-- [ ] A typed `LLMValidationError` is thrown after the retry budget.
+- [x] Rejects: out-of-plan path, protected test file, `../` traversal, missing `search`, confidence `1.5`, malformed JSON.
+- [x] `backend/llm/functions.ts` routes all outputs through the validators (no `as` casts).
+- [x] A typed `LLMValidationError` is thrown after the retry budget.
 
 Full contract: plan → Workstream B, Task B1.
