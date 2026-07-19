@@ -7,6 +7,7 @@ import { FSMIntegration } from './components/fsm';
 import { TaskAttentionBar } from './components/TaskAttentionBar';
 import { trpc } from './lib/trpc';
 import { deriveNotifications } from './lib/notifications';
+import { computePatchScope } from './lib/patchScope';
 
 type HealthStatus = {
   status: 'ok' | 'degraded';
@@ -969,9 +970,10 @@ function PatchReview({ navigate }: { navigate: (view: View) => void }) {
     }
   };
 
-  // Compute patch scope summary from newestPatch
-  const filesChanged = newestPatch?.before && newestPatch?.after ? 1 : 0;
-  const linesChanged = 1; // Simplified
+  // E5: Compute factual patch scope from patch data
+  const patchScope = newestPatch?.before != null && newestPatch?.after != null
+    ? computePatchScope({ file: newestPatch.file ?? 'unknown', before: newestPatch.before, after: newestPatch.after })
+    : null;
 
   return (
     <div className="page patch-page">
@@ -980,10 +982,10 @@ function PatchReview({ navigate }: { navigate: (view: View) => void }) {
       {approvalError && <div className="error-banner">{approvalError}</div>}
       {newestPatch ? (
         <div className="patch-layout">
-          <Panel title="Proposed change" eyebrow={`${filesChanged} file · ${linesChanged} line · tests unchanged`} className="diff-panel">
+          <Panel title="Proposed change" eyebrow={patchScope?.scopeString ?? 'Computing scope...'} className="diff-panel">
             <div className="diff-line removed"><span>-</span><code>{newestPatch.before}</code></div>
             <div className="diff-line added"><span>+</span><code>{newestPatch.after}</code></div>
-            <div className="diff-summary"><span>Scope: {filesChanged} file · {linesChanged} line · tests unchanged</span></div>
+            <div className="diff-summary"><span>Scope: {patchScope?.scopeString ?? 'Computing...'}</span></div>
           </Panel>
           <Panel title="Agent reasoning" eyebrow="Causal path referenced" className="reasoning-panel">
             <p>Patch proposed based on execution evidence.</p>

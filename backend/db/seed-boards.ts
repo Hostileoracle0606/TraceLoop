@@ -13,6 +13,7 @@ import { boards } from './schema';
 const DEFAULT_BOARDS = [
   {
     name: 'STM32F4 Discovery',
+    slug: 'stm32f4_discovery',
     mcu: 'STM32F407VG',
     architecture: 'ARM Cortex-M4F',
     memoryFlash: 1024,
@@ -36,6 +37,7 @@ const DEFAULT_BOARDS = [
   },
   {
     name: 'nRF52840 DK',
+    slug: 'nrf52840_dk',
     mcu: 'nRF52840',
     architecture: 'ARM Cortex-M4F',
     memoryFlash: 1024,
@@ -59,6 +61,7 @@ const DEFAULT_BOARDS = [
   },
   {
     name: 'ESP32-C3 DevKitM',
+    slug: 'esp32c3_devkitm',
     mcu: 'ESP32-C3',
     architecture: 'RISC-V RV32IMC',
     memoryFlash: 4096,

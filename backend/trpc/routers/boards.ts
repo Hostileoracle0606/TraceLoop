@@ -13,6 +13,7 @@ const ledMappingSchema = z.object({
 
 const boardInputSchema = z.object({
   name: z.string().min(1).max(255),
+  slug: z.string().min(1).max(64),
   mcu: z.string().min(1),
   architecture: z.string().min(1),
   memoryFlash: z.number().int().positive(),

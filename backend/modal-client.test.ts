@@ -40,7 +40,7 @@ describe('modalClient.runJob', () => {
 
     // Verify it POSTs to the root endpoint (not /build, /simulate, /analyze)
     expect(mockFetch).toHaveBeenCalledOnce();
-    const [url, options] = mockFetch.mock.calls[0];
+    const [url, options] = mockFetch.mock.calls[0]!;
     expect(url).toBe('https://modal.example.com');
     expect(options.method).toBe('POST');
     expect(options.headers['Content-Type']).toBe('application/json');
