@@ -1,8 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-// Mock inngest before any imports that depend on it
-const mockSend = vi.fn();
-const mockCreateFunction = vi.fn().mockReturnValue({});
+// Use vi.hoisted() to declare mocks that are hoisted along with vi.mock
+const { mockSend, mockCreateFunction } = vi.hoisted(() => ({
+  mockSend: vi.fn(),
+  mockCreateFunction: vi.fn().mockReturnValue({}),
+}));
 
 vi.mock('../../../inngest/client', async () => {
   const actual = await vi.importActual('../../../inngest/client');
@@ -17,6 +19,9 @@ vi.mock('../../../inngest/client', async () => {
 
 import { tasksRouter } from '../tasks';
 import { createMockDb, createMockContext, VALID_TASK_UUID, VALID_RUN_UUID, testUser } from '../../__tests__/contracts/helpers';
+
+// Import to trigger module-level pipeline registration
+import '../../../inngest/functions';
 
 const PROJECT_ID = '550e8400-e29b-41d4-a716-446655440000';
 
@@ -128,9 +133,14 @@ describe('Issue 06: tasks.stop sends TASK_CANCELLED', () => {
 });
 
 describe('Issue 06: firmwareRunPipeline cancelOn configuration', () => {
-  it('pipeline was registered with cancelOn keyed to TASK_CANCELLED by taskId', () => {
-    // functions.ts calls inngest.createFunction at module load time.
-    // Find the call for 'firmware-run-pipeline'.
+  it('pipeline was registered with cancelOn keyed to TASK_CANCELLED by taskId', async () => {
+    // Reset modules to ensure clean state
+    vi.resetModules();
+    
+    // Dynamically import functions module to trigger registration with our mock
+    await import('../../../inngest/functions');
+    
+    // Find the call for 'firmware-run-pipeline'
     const pipelineCall = mockCreateFunction.mock.calls.find(
       (call: any[]) => call[0]?.id === 'firmware-run-pipeline'
     );
