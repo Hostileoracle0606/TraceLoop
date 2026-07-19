@@ -30,6 +30,7 @@ export const projectsRelations = relations(projects, ({ one, many }) => ({
 export const boards = pgTable('boards', {
   id: uuid('id').primaryKey().defaultRandom(),
   name: text('name').notNull(),
+  slug: varchar('slug', { length: 64 }).notNull(),
   mcu: text('mcu').notNull(),
   architecture: text('architecture').notNull(),
   memoryFlash: integer('memory_flash').notNull(), // in KB
@@ -44,10 +45,12 @@ export const boards = pgTable('boards', {
   hasBLE: boolean('has_ble').default(false),
   hasWiFi: boolean('has_wifi').default(false),
   renodePlatformDescription: text('renode_platform_description'), // .repl file path in Renode's platform directory
+  verified: boolean('verified').default(false),
   status: varchar('status', { length: 16 }).default('active'), // active, deprecated, beta
   createdAt: timestamp('created_at').defaultNow().notNull(),
 }, (table) => ({
   nameUniqueIdx: uniqueIndex('boards_name_unique_idx').on(table.name),
+  slugUniqueIdx: uniqueIndex('boards_slug_unique_idx').on(table.slug),
 }));
 
 export const boardsRelations = relations(boards, ({ many }) => ({
