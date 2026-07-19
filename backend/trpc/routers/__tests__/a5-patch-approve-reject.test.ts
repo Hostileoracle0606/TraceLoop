@@ -28,7 +28,16 @@ const BOARD_ID = '770e8400-e29b-41d4-a716-446655440002';
 
 const FILES_AFTER_PATCH = { 'main.c': 'int x = 1;' };
 
+function setupCostQuery(mockDb: ReturnType<typeof createMockDb>) {
+  mockDb.select.mockReturnValue({
+    from: vi.fn().mockReturnValue({
+      where: vi.fn().mockResolvedValue([{ total: 0 }]),
+    }),
+  } as ReturnType<typeof mockDb.select>);
+}
+
 function setupApproveMocks(mockDb: ReturnType<typeof createMockDb>) {
+  setupCostQuery(mockDb);
   // Pre-transaction reads
   mockDb.query.patches.findFirst.mockResolvedValue({
     id: VALID_PATCH_UUID,
@@ -335,6 +344,7 @@ describe('Issue 07 (A5): Patch approve drives task state + rerun', () => {
   it('approve records activity log with toState=rerunning inside transaction', async () => {
     const mockDb = createMockDb();
     const insertData: unknown[] = [];
+    setupCostQuery(mockDb);
 
     mockDb.query.patches.findFirst.mockResolvedValue({
       id: VALID_PATCH_UUID,
@@ -531,6 +541,7 @@ describe('Issue 07 (A5): Activity log and tasks.status never disagree', () => {
     const mockDb = createMockDb();
     const taskSetData: Record<string, unknown>[] = [];
     const insertData: unknown[] = [];
+    setupCostQuery(mockDb);
 
     mockDb.query.patches.findFirst.mockResolvedValue({
       id: VALID_PATCH_UUID,

@@ -41,7 +41,7 @@ vi.mock('../storage', () => ({
 
 // Mock modal-client
 vi.mock('../modal-client', () => ({
-  modalClient: { firmwareJob: vi.fn() },
+  modalClient: { runJob: vi.fn() },
   resolveBoardSlug: vi.fn(),
 }));
 
