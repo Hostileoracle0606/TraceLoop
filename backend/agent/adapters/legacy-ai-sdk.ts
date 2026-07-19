@@ -2,7 +2,7 @@ import type {
   AgentRuntime, AgentStageRequest, AgentStageResponse,
   ProjectRuntimeRef, TaskConversationRef, ConversationView,
 } from '../ports/agent-runtime';
-import { clarifyIntent, generatePlan, editSource, proposePatchLLM } from '../../llm/functions';
+import { clarifyIntent, generatePlan, editSource, proposeBuildRepairLLM, proposePatchLLM } from '../../llm/functions';
 import { AgentProviderError } from '../errors';
 
 /**
@@ -34,6 +34,10 @@ export class LegacyAiSdkRuntime implements AgentRuntime {
       case 'edit': {
         const result = await editSource(request.plan, request.files, request.rootCause);
         return { kind: 'operations', operations: result.operations, summary: result.summary };
+      }
+      case 'repair-build': {
+        const patch = await proposeBuildRepairLLM(request.buildLog, request.files);
+        return { kind: 'patch', patch };
       }
       case 'propose-patch': {
         const patch = await proposePatchLLM(request.rootCause, request.files, request.assertion);

@@ -1,11 +1,12 @@
 import { z } from 'zod';
-import { eq, desc, and } from 'drizzle-orm';
+import { eq, desc, and, sql } from 'drizzle-orm';
 import { router, authenticatedProcedure } from '../context';
 import { tasks, projects, runs, boards, activityLogs, type TaskStatus, type PermissionProfile } from '../../db/schema';
 import { canTransition, type AgentState } from '../../../src/engine/agent-state';
 import { inngest, Events, type TaskRunEventData } from '../../inngest/client';
 import { validateFirmwareFilesInput, validateFileSizeLimits } from '../middleware/validate';
 import { resolveRuntimeForNewTask } from '../../agent/runtime-selection';
+import { checkPipelineBudget } from '../../inngest/pipeline-guard';
 
 // Zod schemas for task data
 const acceptanceCriteriaSchema = z.array(z.object({
@@ -294,7 +295,7 @@ export const tasksRouter = router({
       }
 
       // C1: FSM state guard — only allow execution from valid states
-      const validExecuteStates = ['editing', 'patching', 'rerunning', 'blocked'];
+      const validExecuteStates = ['editing', 'blocked'];
       if (!validExecuteStates.includes(task.status)) {
         throw new Error(`Cannot execute from state '${task.status}'. Must be one of: ${validExecuteStates.join(', ')}`);
       }
@@ -310,18 +311,12 @@ export const tasksRouter = router({
         throw new Error(`Run already in progress for iteration ${task.iteration}`);
       }
 
-      // C1: Budget checks
-      if (task.iteration >= task.maxIterations) {
-        throw new Error(`Maximum iterations (${task.maxIterations}) exceeded`);
-      }
-      // Note: Time and cost budget checks would require aggregating historical runs
-      // For now, we check if the task has a startedAt and if elapsed time exceeds maxTimeMs
-      if (task.startedAt) {
-        const elapsedMs = Date.now() - new Date(task.startedAt).getTime();
-        if (elapsedMs > task.maxTimeMs) {
-          throw new Error(`Maximum time budget (${task.maxTimeMs}ms) exceeded`);
-        }
-      }
+      const [costRow] = await ctx.db
+        .select({ total: sql<number>`coalesce(sum(${runs.costUsd}), 0)` })
+        .from(runs)
+        .where(eq(runs.taskId, task.id));
+      const budget = checkPipelineBudget(task, task.iteration, Number(costRow?.total ?? 0));
+      if (budget) throw new Error(budget.reason);
 
       // Task must have files
       if (!task.currentFiles || Object.keys(task.currentFiles).length === 0) {
@@ -391,10 +386,31 @@ export const tasksRouter = router({
         acceptanceCriteria: task.acceptanceCriteria,
       };
 
-      await inngest.send({
-        name: Events.TASK_RUN_REQUESTED,
-        data: eventData,
-      });
+      try {
+        await inngest.send({
+          name: Events.TASK_RUN_REQUESTED,
+          data: eventData,
+        });
+      } catch (error) {
+        await ctx.db.transaction(async (tx) => {
+          await tx.update(runs).set({ status: 'error', analysisCompletedAt: new Date() })
+            .where(eq(runs.id, run.id));
+          const [blocked] = await tx.update(tasks).set({ status: 'blocked', updatedAt: new Date() })
+            .where(and(eq(tasks.id, task.id), eq(tasks.status, 'building'))).returning();
+          if (blocked) {
+            await tx.insert(activityLogs).values({
+              taskId: task.id,
+              fromState: 'building',
+              toState: 'blocked',
+              reason: 'run-dispatch-failed',
+              actor: 'system',
+              iteration: task.iteration,
+              metadata: { runId: run.id, error: error instanceof Error ? error.message : String(error) },
+            });
+          }
+        });
+        throw new Error('Run could not be dispatched. The task is blocked and can be retried safely.');
+      }
 
       return { runId: run.id, taskId: task.id };
     }),

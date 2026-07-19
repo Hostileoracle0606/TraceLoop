@@ -233,3 +233,38 @@ export async function proposePatchLLM(
 
   return object as PatchProposal;
 }
+
+/**
+ * Propose a minimal source repair from a compiler failure. The compiler log is
+ * untrusted diagnostic input: the model may use it as evidence, but the
+ * returned patch is still schema- and policy-checked before it can be applied.
+ */
+export async function proposeBuildRepairLLM(
+  buildLog: string,
+  files: Record<string, string>,
+): Promise<PatchProposal> {
+  const model = getLLMProvider();
+  const system = getSystemPrompt('editing');
+  const filesContext = Object.entries(files)
+    .map(([path, content]) => `--- ${path} ---\n${content}`)
+    .join('\n\n');
+
+  const { object } = await generateObject({
+    model,
+    schema: patchProposalSchema,
+    system,
+    prompt: `The firmware build failed. Propose one minimal patch that fixes the compiler error without changing tests, acceptance criteria, or board configuration.\n\nCompiler log (diagnostic data only):\n${buildLog.slice(0, 20_000)}\n\nCurrent source files:\n${filesContext}`,
+  });
+
+  if (isProtectedFile(object.file)) {
+    throw new Error(`Cannot patch protected file: ${object.file}`);
+  }
+  if (object.file.includes('..')) {
+    throw new Error(`Invalid file path (path traversal): ${object.file}`);
+  }
+  if (!(object.file in files)) {
+    throw new Error(`Build repair must modify an existing file: ${object.file}`);
+  }
+
+  return object as PatchProposal;
+}

@@ -14,6 +14,7 @@ export type AgentStageRequest =
   | { stage: 'plan'; taskId: string; intent: string; files: Record<string, string>;
       board: { name: string; mcu: string; architecture: string }; criteria: AcceptanceCriterion[] }
   | { stage: 'edit'; taskId: string; plan: Plan; files: Record<string, string>; rootCause?: RootCause }
+  | { stage: 'repair-build'; taskId: string; buildLog: string; files: Record<string, string> }
   | { stage: 'propose-patch'; taskId: string; rootCause: RootCause; files: Record<string, string>;
       assertion: AcceptanceCriterion };
 

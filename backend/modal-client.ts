@@ -17,6 +17,8 @@ export interface FirmwareJobRequest {
 export interface FirmwareJobResult {
   build: { ok: boolean; log: string };
   trace?: { log: string }; // only present if build.ok
+  /** Optional provider-reported compute cost in dollars. Persisted as cents. */
+  usage?: { costUsd?: number };
 }
 
 class ModalClient {
