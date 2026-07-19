@@ -30,6 +30,12 @@ export type FailureType =
 
 /** Classifies an error into a FailureType based on its message/context. */
 export function classifyFailure(error: unknown, stage: 'firmware-job' | 'analyze-results'): FailureType {
+  // F5: AgentProviderError is always infrastructure — never a firmware/build/criteria failure.
+  // Use name check (not instanceof) to avoid importing from backend/agent/.
+  if (error instanceof Error && error.name === 'AgentProviderError') {
+    return 'infra-failure';
+  }
+
   const message = error instanceof Error ? error.message : String(error);
 
   if (stage === 'firmware-job') {
