@@ -4,9 +4,9 @@
 
 **Blocked by:** None — can start immediately.
 
-**Status:** ready-for-agent
+**Status:** complete
 
-- [ ] Cold load lands on Projects; an active task shows a Resume card.
-- [ ] Sidebar reflects the grouping; FSM is under Advanced.
+- [x] Cold load lands on Projects; an active task shows a Resume card.
+- [x] Sidebar reflects the grouping; FSM is under Advanced.
 
 Full contract: plan → Workstream E, Task E1.
