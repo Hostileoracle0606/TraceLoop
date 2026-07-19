@@ -6,6 +6,7 @@ import { canTransition, type AgentState } from '../../../src/engine/agent-state'
 import { inngest, Events, type TaskRunEventData } from '../../inngest/client';
 import { validateFirmwareFilesInput, validateFileSizeLimits } from '../middleware/validate';
 import { resolveRuntimeForNewTask } from '../../agent/runtime-selection';
+import { validateExecuteState, buildResourceControls } from './execute-helpers';
 
 // Zod schemas for task data
 const acceptanceCriteriaSchema = z.array(z.object({
@@ -293,11 +294,8 @@ export const tasksRouter = router({
         throw new Error('Access denied');
       }
 
-      // C1: FSM state guard — only allow execution from valid states
-      const validExecuteStates = ['editing', 'patching', 'rerunning', 'blocked'];
-      if (!validExecuteStates.includes(task.status)) {
-        throw new Error(`Cannot execute from state '${task.status}'. Must be one of: ${validExecuteStates.join(', ')}`);
-      }
+      // A6: FSM state guard — only allow execution from planning/editing/blocked
+      validateExecuteState(task.status as import('../../db/schema').TaskStatus);
 
       // C1: Concurrent run guard — prevent multiple runs for same task+iteration
       const activeRun = await ctx.db.query.runs.findFirst({
@@ -380,6 +378,8 @@ export const tasksRouter = router({
       });
 
       // Send Inngest event to trigger the pipeline
+      // A6: pass resourceControls derived from task DB columns (cost cents→dollars)
+      const resourceControls = buildResourceControls(task);
       const eventData: TaskRunEventData = {
         taskId: task.id,
         runId: run.id,
@@ -389,6 +389,7 @@ export const tasksRouter = router({
         files: task.currentFiles,
         boardId: project.boardId,
         acceptanceCriteria: task.acceptanceCriteria,
+        resourceControls,
       };
 
       await inngest.send({
