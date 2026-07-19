@@ -6,7 +6,7 @@ import type { Context } from '../../context';
  * All query methods return vi.fn() mocks that can be configured per test.
  */
 export function createMockDb() {
-  return {
+  const db = {
     query: {
       projects: {
         findFirst: vi.fn(),
@@ -64,7 +64,12 @@ export function createMockDb() {
     delete: vi.fn().mockReturnValue({
       where: vi.fn().mockResolvedValue(undefined),
     }),
+    transaction: vi.fn().mockImplementation(async (fn: (tx: unknown) => Promise<unknown>) => {
+      // The tx passed to the callback is the mock db itself
+      return fn(db);
+    }),
   };
+  return db;
 }
 
 /** A valid UUID for testing. */
