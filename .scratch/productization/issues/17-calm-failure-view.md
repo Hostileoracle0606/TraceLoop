@@ -4,9 +4,9 @@
 
 **Blocked by:** None — can start immediately.
 
-**Status:** ready-for-agent
+**Status:** complete
 
-- [ ] First paint answers: what failed / why / what to do / evidence.
-- [ ] Timeline/board/graph/filters are progressive disclosure, not a competing wide grid.
+- [x] First paint answers: what failed / why / what to do / evidence.
+- [x] Timeline/board/graph/filters are progressive disclosure, not a competing wide grid.
 
 Full contract: plan → Workstream E, Task E3.

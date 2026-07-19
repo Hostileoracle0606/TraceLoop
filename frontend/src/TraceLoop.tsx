@@ -576,6 +576,7 @@ function AgentWorkspace({ navigate, wizardConfig }: { navigate: (view: View) => 
   const { taskId } = useTask();
   const [input, setInput] = useState('');
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
+  const [conversation, setConversation] = useState<ChatMessage[]>([]);
 
   // Poll task data every 2 seconds
   const { data: task } = trpc.tasks.get.useQuery(
@@ -592,19 +593,61 @@ function AgentWorkspace({ navigate, wizardConfig }: { navigate: (view: View) => 
   // Clarify mutation - only available in clarification-needed state
   const clarifyMutation = trpc.agent.clarify.useMutation();
 
-  // Stop task
+  // Stop task (used by suggested prompt handler)
   const stopMutation = trpc.tasks.stop.useMutation();
 
   const sendMessage = useCallback(async () => {
     const text = input.trim();
-    if (!text || !taskId || task?.status !== 'clarification-needed') return;
-    setInput('');
-    try {
-      await clarifyMutation.mutateAsync({ taskId });
-    } catch (err: any) {
-      console.error('Failed to send clarification:', err);
+    if (!text || !taskId) return;
+    
+    // If in clarification-needed state, use the clarify mutation
+    if (task?.status === 'clarification-needed') {
+      setInput('');
+      try {
+        await clarifyMutation.mutateAsync({ taskId });
+      } catch (err: any) {
+        console.error('Failed to send clarification:', err);
+      }
+      return;
     }
-  }, [input, taskId, task?.status, clarifyMutation]);
+    
+    // Otherwise, use the turn mutation (E7)
+    setInput('');
+    setConversation(prev => [...prev, { role: 'user', text }]);
+    try {
+      const result = await turnMutation.mutateAsync({ taskId, text });
+      setConversation(prev => [...prev, { role: 'agent', text: result.reply }]);
+    } catch (err: any) {
+      console.error('Failed to send turn:', err);
+      setConversation(prev => [...prev, { role: 'agent', text: `Error: ${err.message}` }]);
+    }
+  }, [input, taskId, task?.status, clarifyMutation, turnMutation]);
+
+  // E7: Handle suggested prompt clicks
+  const handleSuggestedPrompt = useCallback(async (text: string) => {
+    if (!taskId) return;
+    
+    // If it's a stop request, trigger the stop mutation
+    if (text.toLowerCase().includes('stop')) {
+      try {
+        await stopMutation.mutateAsync({ taskId });
+        setConversation(prev => [...prev, { role: 'user', text }, { role: 'agent', text: 'Task stopped.' }]);
+      } catch (err: any) {
+        console.error('Failed to stop task:', err);
+      }
+      return;
+    }
+    
+    // Otherwise, use the turn mutation
+    setConversation(prev => [...prev, { role: 'user', text }]);
+    try {
+      const result = await turnMutation.mutateAsync({ taskId, text });
+      setConversation(prev => [...prev, { role: 'agent', text: result.reply }]);
+    } catch (err: any) {
+      console.error('Failed to send turn:', err);
+      setConversation(prev => [...prev, { role: 'agent', text: `Error: ${err.message}` }]);
+    }
+  }, [taskId, turnMutation, stopMutation]);
 
   // Map activity log to execution steps
   const steps = useMemo(() => {
@@ -672,21 +715,12 @@ function RunProgress({ navigate }: { navigate: (view: View) => void }) {
   const { taskId } = useTask();
   const [openConsole, setOpenConsole] = useState("Test runner");
 
-  // Poll task for task-attention bar
-  const { data: task } = trpc.tasks.get.useQuery(
-    { id: taskId! },
-    { enabled: !!taskId, refetchInterval: 2000 }
-  );
-
   // Load newest run for the task
   const { data: runs } = trpc.runs.listByTask.useQuery(
     { taskId: taskId! },
     { enabled: !!taskId, refetchInterval: 2000 }
   );
   const newestRun = runs?.[0];
-
-  // Stop mutation
-  const stopMutation = trpc.tasks.stop.useMutation();
 
   // Map run status to pipeline stages
   const stages = newestRun ? [
@@ -802,13 +836,6 @@ function FailureAnalysis({ navigate, taskId }: { navigate: (view: View) => void;
   const [showTechnicalEvidence, setShowTechnicalEvidence] = useState(false);
   const event = events[selected];
 
-  // Poll task for task-attention bar
-  const { data: task } = trpc.tasks.get.useQuery(
-    { id: effectiveTaskId! },
-    { enabled: !!effectiveTaskId, refetchInterval: 2000 }
-  );
-  const stopMutation = trpc.tasks.stop.useMutation();
-
   const { data: patches } = trpc.patches.listByTask.useQuery(
     { taskId: effectiveTaskId! },
     { enabled: !!effectiveTaskId }
@@ -838,11 +865,11 @@ function FailureAnalysis({ navigate, taskId }: { navigate: (view: View) => void;
           {/* E3: Calm root-cause panel — first paint answers what/why/what to do/evidence */}
           <div className="evidence-panel" data-testid="root-cause-panel">
             <div data-testid="failure-summary">
-              <div className="evidence-heading"><div className="evidence-icon">◎</div><div><span className="eyebrow">What failed</span><h2>green_led_should_turn_on</h2></div><Badge tone="red">Assertion failed</Badge></div>
+              <span className="eyebrow">What failed</span>
+              <p className="failed-assertion"><Badge tone="red">Assertion failed</Badge> <strong>green_led_should_turn_on</strong></p>
             </div>
             <div data-testid="root-cause">
-              <h3 className="subheading">Why it failed</h3>
-              <p className="explanation">{runData.rootCauseText}</p>
+              <div className="evidence-heading"><div className="evidence-icon">◎</div><div><span className="eyebrow">Why it failed</span><h2>{runData.rootCauseText}</h2></div></div>
               <p className="explanation">Timer 2 triggered IRQ 28 and entered <code>timer_isr</code>. At <code>main.c:37</code>, the handler wrote GPIO pin 13 instead of the expected pin 12. This changed the orange LED while the green LED remained off at the 2 ms deadline.</p>
             </div>
             <div data-testid="confidence-badge"><Badge tone="green">Confidence · 0.99</Badge></div>
@@ -908,13 +935,6 @@ function PatchReview({ navigate }: { navigate: (view: View) => void }) {
   const [rejectionReason, setRejectionReason] = useState('');
   const [showRejectInput, setShowRejectInput] = useState(false);
   const [approvalError, setApprovalError] = useState<string | null>(null);
-
-  // Poll task for task-attention bar
-  const { data: task } = trpc.tasks.get.useQuery(
-    { id: taskId! },
-    { enabled: !!taskId, refetchInterval: 2000 }
-  );
-  const stopMutation = trpc.tasks.stop.useMutation();
 
   // Load newest patch for task
   const { data: patches } = trpc.patches.listByTask.useQuery(

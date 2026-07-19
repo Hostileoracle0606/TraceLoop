@@ -309,4 +309,113 @@ test.describe('Run Failure Analysis', () => {
       await expect(visibleRows.nth(i)).toContainText('Failed');
     }
   });
+
+  // ── E3: Calm failure view with progressive disclosure ──
+
+  test('first paint answers: what failed, why, what to do, evidence', async ({ page }) => {
+    await page.click('[data-testid="nav-history"]');
+    await page.click('text=RUN-1042');
+    await page.waitForTimeout(300);
+
+    // What failed: the failed assertion name is visible
+    const failureSummary = page.locator('[data-testid="failure-summary"]');
+    await expect(failureSummary).toBeVisible();
+    await expect(failureSummary).toContainText('green_led_should_turn_on');
+
+    // Why: root cause is shown in plain language
+    const rootCause = page.locator('[data-testid="root-cause"]');
+    await expect(rootCause).toBeVisible();
+    const rootCauseText = await rootCause.textContent();
+    expect(rootCauseText).toContain('pin 13');
+
+    // What to do: recommended next action is present
+    const recommendedAction = page.locator('[data-testid="recommended-action"]');
+    await expect(recommendedAction).toBeVisible();
+
+    // Evidence: evidence chain is visible
+    const evidenceChain = page.locator('[data-testid="evidence-chain"]');
+    await expect(evidenceChain).toBeVisible();
+  });
+
+  test('recommended next action shows Review proposed fix when patch exists', async ({ page }) => {
+    await page.click('[data-testid="nav-history"]');
+    await page.click('text=RUN-1042');
+    await page.waitForTimeout(300);
+
+    // When a proposed patch exists, the recommended action should be "Review proposed fix"
+    const recommendedAction = page.locator('[data-testid="recommended-action"]');
+    await expect(recommendedAction).toBeVisible();
+    // Should contain a primary CTA for reviewing the fix
+    const primaryBtn = recommendedAction.locator('[data-testid="review-fix"]');
+    await expect(primaryBtn).toBeVisible();
+  });
+
+  test('Rerun is demoted to Rerun unchanged', async ({ page }) => {
+    await page.click('[data-testid="nav-history"]');
+    await page.click('text=RUN-1042');
+    await page.waitForTimeout(300);
+
+    // The run actions area should contain "Rerun unchanged" (not just "Rerun")
+    const runActions = page.locator('.run-actions');
+    await expect(runActions).toBeVisible();
+    // Should have a button with text "Rerun unchanged"
+    const rerunBtn = runActions.locator('button', { hasText: 'Rerun unchanged' });
+    await expect(rerunBtn).toBeVisible();
+  });
+
+  test('confidence is shown exactly once in the failure view', async ({ page }) => {
+    await page.click('[data-testid="nav-history"]');
+    await page.click('text=RUN-1042');
+    await page.waitForTimeout(300);
+
+    // Confidence badge should appear exactly once in the root cause area
+    const confidenceBadges = page.locator('[data-testid="confidence-badge"]');
+    const count = await confidenceBadges.count();
+    expect(count).toBe(1);
+  });
+
+  test('raw Renode evidence is under Technical evidence section', async ({ page }) => {
+    await page.click('[data-testid="nav-history"]');
+    await page.click('text=RUN-1042');
+    await page.waitForTimeout(300);
+
+    // Technical evidence section should exist
+    const techEvidence = page.locator('[data-testid="technical-evidence"]');
+    await expect(techEvidence).toBeVisible();
+    await expect(techEvidence).toContainText('Technical evidence');
+  });
+
+  test('no duplicate evidence panels', async ({ page }) => {
+    await page.click('[data-testid="nav-history"]');
+    await page.click('text=RUN-1042');
+    await page.waitForTimeout(300);
+
+    // There should be exactly one evidence panel (the root cause summary)
+    const evidencePanels = page.locator('[data-testid="root-cause-panel"]');
+    const count = await evidencePanels.count();
+    expect(count).toBe(1);
+  });
+
+  test('timeline/board/graph shown one at a time via tabs', async ({ page }) => {
+    await page.click('[data-testid="nav-history"]');
+    await page.click('text=RUN-1042');
+    await page.waitForTimeout(300);
+
+    // Only one debug panel should be visible at a time
+    const debugPanels = page.locator('.debug-grid > .debug-panel');
+    const visibleCount = await debugPanels.filter({ has: page.locator(':visible') }).count();
+    expect(visibleCount).toBe(1);
+
+    // Switch to board
+    await page.locator('.debug-tabs button', { hasText: 'Virtual board' }).click();
+    await page.waitForTimeout(200);
+    const visibleAfterBoard = await debugPanels.filter({ has: page.locator(':visible') }).count();
+    expect(visibleAfterBoard).toBe(1);
+
+    // Switch to graph
+    await page.locator('.debug-tabs button', { hasText: 'Causal graph' }).click();
+    await page.waitForTimeout(200);
+    const visibleAfterGraph = await debugPanels.filter({ has: page.locator(':visible') }).count();
+    expect(visibleAfterGraph).toBe(1);
+  });
 });
