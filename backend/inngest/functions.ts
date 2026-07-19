@@ -332,7 +332,7 @@ export const cancelFirmwareRun = inngest.createFunction(
 
 // ── Helper functions ───────────────────────────────────────────────
 
-async function updateRunStatus(
+export async function updateRunStatus(
   runId: string,
   status: 'building' | 'simulating' | 'analyzing' | 'passed' | 'failed' | 'error' | 'cancelled'
 ) {
@@ -377,7 +377,7 @@ async function updateRunStatus(
   if (error) throw new Error(`Failed to update run status: ${error.message}`);
 }
 
-async function updateTaskStatus(
+export async function updateTaskStatus(
   taskId: string,
   status: string
 ) {
