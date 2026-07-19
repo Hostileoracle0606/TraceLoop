@@ -88,24 +88,18 @@ describe('modalClient.runJob', () => {
   });
 
   it('throws when MODAL_ENDPOINT is not configured', async () => {
-    // Temporarily override the mock to return undefined
-    const { getModalEndpoint } = await import('./config');
+    // Reset modules to clear the cache
+    vi.resetModules();
+
+    // Re-mock with undefined endpoint
     vi.doMock('./config', () => ({
       getModalEndpoint: () => undefined,
     }));
-
-    // Need to re-import to get the new mock
-    vi.resetModules();
-    vi.stubGlobal('fetch', mockFetch);
-
-    // Re-mock after resetModules
-    vi.mock('./config', () => ({
-      getModalEndpoint: () => undefined,
-    }));
-    vi.mock('./db', () => ({
+    vi.doMock('./db', () => ({
       db: { query: { boards: { findFirst: vi.fn() } } },
     }));
 
+    // Import fresh instance
     const { modalClient: freshClient } = await import('./modal-client');
 
     await expect(
@@ -114,5 +108,13 @@ describe('modalClient.runJob', () => {
         board: 'stm32f4_disco',
       }),
     ).rejects.toThrow('MODAL_ENDPOINT not configured');
+
+    // Restore mocks for other tests
+    vi.doMock('./config', () => ({
+      getModalEndpoint: () => 'https://modal.example.com',
+    }));
+    vi.doMock('./db', () => ({
+      db: { query: { boards: { findFirst: vi.fn() } } },
+    }));
   });
 });
