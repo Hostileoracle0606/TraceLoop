@@ -47,7 +47,7 @@ describe('driveToolLoop', () => {
       makeRun({ status: 'completed', finalText: 'done' }),
     ];
     let i = 0;
-    const submitOutputs = vi.fn(async () => {});
+    const submitOutputs = vi.fn(async (_outputs: Array<{ toolCallId: string; output: unknown }>) => {});
     const result = await driveToolLoop({
       getRun: async () => states[i++]!,
       submitOutputs,
@@ -62,7 +62,7 @@ describe('driveToolLoop', () => {
     expect(submitOutputs).toHaveBeenCalledTimes(1);
     const batch = submitOutputs.mock.calls[0]![0];
     expect(batch).toHaveLength(2);
-    expect(batch.find((o: { toolCallId: string }) => o.toolCallId === 'c2').output).toHaveProperty('error');
+    expect(batch.find((o) => o.toolCallId === 'c2')?.output).toHaveProperty('error');
   });
 
   it('F3: throws budget-exceeded after maxRounds', async () => {

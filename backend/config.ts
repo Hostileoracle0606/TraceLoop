@@ -22,6 +22,12 @@ const envSchema = z.object({
   ANTHROPIC_API_KEY: z.string().min(1).optional(),
   OPENAI_API_KEY: z.string().min(1).optional(),
 
+  // Agent runtime (issue 02) — F6: enum, NOT z.coerce.boolean(), because
+  // Boolean('false') === true would silently enable Backboard.
+  AGENT_RUNTIME_BACKBOARD_ENABLED: z.enum(['true', 'false']).default('false'),
+  BACKBOARD_API_KEY: z.string().min(1).optional(),
+  BACKBOARD_BASE_URL: z.string().url().optional(),
+
   // Observability
   LOG_LEVEL: z.enum(['trace', 'debug', 'info', 'warn', 'error']).default('info'),
   SENTRY_DSN: z.string().url().optional(),
@@ -101,4 +107,18 @@ export function getLogConfig(): { level: Env['LOG_LEVEL']; sentryDsn?: string } 
     level: e.LOG_LEVEL,
     sentryDsn: e.SENTRY_DSN,
   };
+}
+
+export function getAgentRuntimeConfig() {
+  const e = getEnv();
+  return {
+    backboardEnabled: e.AGENT_RUNTIME_BACKBOARD_ENABLED === 'true',
+    backboardApiKey: e.BACKBOARD_API_KEY,
+    backboardBaseUrl: e.BACKBOARD_BASE_URL,
+  };
+}
+
+/** Test-only: clear the cached env so per-test process.env changes apply. */
+export function __resetEnvForTests(): void {
+  env = undefined;
 }

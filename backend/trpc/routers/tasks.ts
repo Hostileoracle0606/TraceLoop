@@ -5,6 +5,7 @@ import { tasks, projects, runs, boards, activityLogs, type TaskStatus, type Perm
 import { canTransition, type AgentState } from '../../../src/engine/agent-state';
 import { inngest, Events, type TaskRunEventData } from '../../inngest/client';
 import { validateFirmwareFilesInput, validateFileSizeLimits } from '../middleware/validate';
+import { resolveRuntimeForNewTask } from '../../agent/runtime-selection';
 
 // Zod schemas for task data
 const acceptanceCriteriaSchema = z.array(z.object({
@@ -116,6 +117,7 @@ export const tasksRouter = router({
           intent: input.intent,
           acceptanceCriteria: input.acceptanceCriteria,
           permissionProfile: input.permissionProfile,
+          agentRuntime: resolveRuntimeForNewTask(project.agentRuntimeDefault),
           maxIterations: input.maxIterations,
           maxTimeMs: input.maxTimeMs,
           maxCostUsd: input.maxCostUsd,

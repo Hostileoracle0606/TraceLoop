@@ -11,6 +11,7 @@ export const projects = pgTable('projects', {
   name: text('name').notNull(),
   description: text('description'),
   boardId: uuid('board_id').references(() => boards.id),
+  agentRuntimeDefault: varchar('agent_runtime_default', { length: 16 }).notNull().default('legacy'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 }, (table) => ({
@@ -92,6 +93,9 @@ export const tasks = pgTable('tasks', {
   
   // Permission profile
   permissionProfile: varchar('permission_profile', { length: 16 }).notNull().default('guided'),
+  
+  // Agent runtime (pinned at creation; never changes mid-task — C4)
+  agentRuntime: varchar('agent_runtime', { length: 16 }).notNull().default('legacy'),
   
   // Resource controls
   maxIterations: integer('max_iterations').notNull().default(5),
