@@ -42,15 +42,19 @@ export class LegacyAiSdkRuntime implements AgentRuntime {
     }
   }
 
-  async submitToolResults(): Promise<AgentStageResponse> {
+  async submitToolResults(_input: {
+    taskId: string;
+    providerRunRef: string;
+    outputs: Array<{ toolCallId: string; output: unknown }>;
+  }): Promise<AgentStageResponse> {
     throw new AgentProviderError('runtime-unsupported', 'legacy runtime has no provider tool loop');
   }
 
-  async getConversation(): Promise<ConversationView> {
+  async getConversation(_input: { taskId: string }): Promise<ConversationView> {
     return { messages: [] };
   }
 
-  async cancel(): Promise<void> {
+  async cancel(_input: { taskId: string; providerRunRef?: string }): Promise<void> {
     // Legacy AI SDK calls are single-shot; nothing to cancel.
   }
 }
