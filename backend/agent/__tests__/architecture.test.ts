@@ -9,6 +9,7 @@ const ALLOWLIST = [
   'backend/agent/adapters/backboard',
   'backend/agent/spike',
   'backend/agent/__tests__',
+  'backend/agent/runtime-selection.ts', // sole composition point
   'spikes',
 ];
 

@@ -1,9 +1,11 @@
 import { getAgentRuntimeConfig, __resetEnvForTests } from '../config';
 import { AgentProviderError } from './errors';
 import { LegacyAiSdkRuntime } from './adapters/legacy-ai-sdk';
+import { BackboardAgentRuntime } from './adapters/backboard/runtime';
 import type { AgentRuntime, AgentRuntimeName } from './ports/agent-runtime';
 
 let legacySingleton: LegacyAiSdkRuntime | undefined;
+let backboardSingleton: BackboardAgentRuntime | undefined;
 
 export function isBackboardEnabled(): boolean {
   return getAgentRuntimeConfig().backboardEnabled;
@@ -20,11 +22,18 @@ export function resolveAgentRuntime(task: { agentRuntime: string }): AgentRuntim
   switch (task.agentRuntime) {
     case 'legacy':
       return (legacySingleton ??= new LegacyAiSdkRuntime());
-    case 'backboard':
+    case 'backboard': {
       if (!isBackboardEnabled()) {
         throw new AgentProviderError('runtime-disabled', 'Backboard runtime is not enabled in this environment');
       }
-      throw new AgentProviderError('runtime-unsupported', 'BackboardAgentRuntime is not implemented (issue 09)');
+      const { backboardApiKey, backboardBaseUrl } = getAgentRuntimeConfig();
+      if (!backboardApiKey || !backboardBaseUrl) {
+        throw new AgentProviderError('runtime-disabled', 'BACKBOARD_API_KEY / BACKBOARD_BASE_URL are not configured');
+      }
+      return (backboardSingleton ??= new BackboardAgentRuntime({
+        enabled: true, apiKey: backboardApiKey, baseUrl: backboardBaseUrl,
+      }));
+    }
     default:
       throw new AgentProviderError('runtime-unsupported', `Unknown agent runtime: ${task.agentRuntime}`);
   }
@@ -32,5 +41,6 @@ export function resolveAgentRuntime(task: { agentRuntime: string }): AgentRuntim
 
 export function __resetRuntimeSelectionForTests(): void {
   legacySingleton = undefined;
+  backboardSingleton = undefined;
   __resetEnvForTests();
 }
