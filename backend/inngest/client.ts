@@ -32,6 +32,11 @@ export interface TaskRunEventData {
     expect: string;
     byTime: number;
   }>;
+  resourceControls: {
+    maxIterations: number;
+    maxTimeMs: number;
+    maxCostUsd: number;
+  };
 }
 
 export interface TaskCancelledEventData {
