@@ -457,7 +457,7 @@ export const tasksRouter = router({
       });
 
       // Send TASK_CANCELLED event to Inngest if there's an active run
-      if (latestRun && !['passed', 'failed', 'error'].includes(latestRun.status)) {
+      if (latestRun && !['passed', 'failed', 'error', 'cancelled'].includes(latestRun.status)) {
         await inngest.send({
           name: Events.TASK_CANCELLED,
           data: {
