@@ -1,0 +1,13 @@
+{
+  "id": "run_spikefixture01",
+  "status": "REQUIRES_ACTION",
+  "required_action": {
+    "tool_calls": [
+      {
+        "id": "call_1",
+        "name": "submit_plan",
+        "arguments": "{\"steps\":[{\"file\":\"src/main.c\",\"action\":\"modify\",\"description\":\"d\"}],\"summary\":\"s\"}"
+      }
+    ]
+  }
+}
