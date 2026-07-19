@@ -11,6 +11,7 @@
     "typecheck": "tsc --noEmit",
     "backend:dev": "tsx watch backend/trpc/server.ts",
     "backend:start": "tsx backend/trpc/server.ts",
+    "backboard:check": "node --env-file-if-exists=.env --import tsx spikes/backboard-feasibility/connectivity.ts",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:push": "drizzle-kit push",

@@ -14,11 +14,13 @@ export class BackboardClient {
   private readonly fetchImpl: typeof fetch;
   private readonly timeoutMs: number;
   private readonly retryBaseMs: number;
+  private readonly baseUrl: string;
 
   constructor(private readonly cfg: BackboardClientConfig) {
     this.fetchImpl = cfg.fetchImpl ?? fetch;
     this.timeoutMs = cfg.timeoutMs ?? 30_000;
     this.retryBaseMs = cfg.retryBaseMs ?? 500;
+    this.baseUrl = cfg.baseUrl.replace(/\/+$/, '');
   }
 
   get<T>(path: string): Promise<T> {
@@ -37,10 +39,10 @@ export class BackboardClient {
     let lastError: unknown;
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
       try {
-        const response = await this.fetchImpl(`${this.cfg.baseUrl}${path}`, {
+        const response = await this.fetchImpl(`${this.baseUrl}${path}`, {
           method,
           headers: {
-            'x-api-key': this.cfg.apiKey,
+            'X-API-Key': this.cfg.apiKey,
             'content-type': 'application/json',
           },
           body: body === undefined ? undefined : JSON.stringify(body),
