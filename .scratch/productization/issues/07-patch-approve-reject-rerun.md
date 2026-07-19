@@ -4,10 +4,10 @@
 
 **Blocked by:** 05 (pipeline loop + rerun event).
 
-**Status:** ready-for-agent
+**Status:** complete
 
-- [ ] Approve → `tasks.status='rerunning'` + a rerun is enqueued (test).
-- [ ] Reject → `tasks.status='editing'`.
-- [ ] Activity log `to_state` and `tasks.status` never disagree.
+- [x] Approve → `tasks.status='rerunning'` + a rerun is enqueued (test).
+- [x] Reject → `tasks.status='editing'`.
+- [x] Activity log `to_state` and `tasks.status` never disagree.
 
 Full contract: plan → Workstream A, Task A5.

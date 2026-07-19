@@ -17,6 +17,7 @@ function createCaller(user: { id: string } | null, db?: ReturnType<typeof create
 
 const validBoardInput = {
   name: 'STM32F4 Discovery',
+  slug: 'stm32f4_discovery',
   mcu: 'STM32F407VG',
   architecture: 'arm_cortex_m4',
   memoryFlash: 1024,

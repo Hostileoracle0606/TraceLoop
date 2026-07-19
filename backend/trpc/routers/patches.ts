@@ -4,6 +4,7 @@ import { router, authenticatedProcedure } from '../context';
 import { patches, tasks, projects, runs, activityLogs } from '../../db/schema';
 import { checkPermission } from '../../../src/engine/permissions';
 import { inngest, Events, type TaskRunEventData } from '../../inngest/client';
+import { buildResourceControls } from './execute-helpers';
 
 export const patchesRouter = router({
   // List patches for a task
@@ -206,6 +207,7 @@ export const patchesRouter = router({
       });
 
       // C3: Enqueue rerun (outside transaction — Inngest send is not transactional)
+      // A6: pass resourceControls derived from task DB columns (cost cents→dollars)
       const eventData: TaskRunEventData = {
         taskId: task.id,
         runId: result.run.id,
@@ -215,6 +217,7 @@ export const patchesRouter = router({
         files: patch.filesAfterPatch,
         boardId: project.boardId!,
         acceptanceCriteria: task.acceptanceCriteria,
+        resourceControls: buildResourceControls(task),
       };
 
       await inngest.send({

@@ -185,7 +185,7 @@ describe('LLM Functions', () => {
 
     it('includes root cause and assertion in the prompt', async () => {
       mockGenerateObject.mockResolvedValue({
-        object: { file: 'src/patch.c', before: '', after: '', summary: '', confidence: 0.5 },
+        object: { file: 'src/patch.c', before: '', after: '', summary: 'patch', confidence: 0.5 },
       } as any);
 
       await proposePatchLLM(

@@ -181,6 +181,12 @@ describe('runStatefulAuthoringLoop', () => {
       expect(result.auditLog.some(t => t.reason === 'awaiting-approval')).toBe(true);
       // Should NOT have converged
       expect(result.result.status).not.toBe('passed');
+      // Files should remain unchanged (no patch applied)
+      if (result.result.status === 'gave-up') {
+        expect(result.result.files['src/main.c']).toBe(mainC);
+      }
+      // No forged patch-approved transition
+      expect(result.auditLog.some(t => t.reason === 'patch-approved')).toBe(false);
     });
 
     it('pauses in guided mode when patch approval is required', async () => {
@@ -193,6 +199,12 @@ describe('runStatefulAuthoringLoop', () => {
       // Guided mode requires approval at patch checkpoint
       expect(result.finalState).toBe('patching');
       expect(result.auditLog.some(t => t.reason === 'awaiting-approval')).toBe(true);
+      // Files should remain unchanged (no patch applied)
+      if (result.result.status === 'gave-up') {
+        expect(result.result.files['src/main.c']).toBe(mainC);
+      }
+      // No forged patch-approved transition
+      expect(result.auditLog.some(t => t.reason === 'patch-approved')).toBe(false);
     });
 
     it('converges in autonomous mode (no approval needed)', async () => {
@@ -205,6 +217,14 @@ describe('runStatefulAuthoringLoop', () => {
       // Autonomous mode auto-allows patches
       expect(result.finalState).toBe('completed');
       expect(result.result.status).toBe('passed');
+      // Patch should be applied
+      if (result.result.status === 'passed') {
+        expect(result.result.files['src/main.c']).toContain('gpio_pin_set_dt(&green_led, 1)');
+      }
+      // patch-approved should be recorded with actor 'system' (auto-approval)
+      const patchApproved = result.auditLog.find(t => t.reason === 'patch-approved');
+      expect(patchApproved).toBeDefined();
+      expect(patchApproved?.actor).toBe('system');
     });
   });
 

@@ -1,0 +1,17 @@
+{
+  "probe": "P1-lifecycle",
+  "capturedAt": "2026-07-19T03:05:39.055Z",
+  "steps": [
+    {
+      "n": 1,
+      "label": "probe-error",
+      "at": "2026-07-19T03:05:39.053Z",
+      "data": {
+        "error": {
+          "name": "AgentProviderError",
+          "message": "HTTP 401"
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+(export (version "E")
+  (components
+    (comp (ref "U1") (value "STM32F407VGT6") (footprint "Package_QFP:LQFP-100"))
+    (comp (ref "D1") (value "LED_Green") (footprint "LED_SMD:LED_0805")))
+  (nets
+    (net (code "1") (name "/LED_GREEN")
+      (node (ref "U1") (pin "108") (pinfunction "PG13"))
+      (node (ref "D1") (pin "2") (pinfunction "A")))
+    (net (code "2") (name "GND")
+      (node (ref "U1") (pin "10"))
+      (node (ref "D1") (pin "1") (pinfunction "K")))))

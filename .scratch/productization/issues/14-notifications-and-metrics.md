@@ -4,9 +4,9 @@
 
 **Blocked by:** None — can start immediately.
 
-**Status:** ready-for-agent
+**Status:** complete
 
-- [ ] Notifications reflect real activity logs, grouped, decision-first.
-- [ ] Zero-state shows "No runs yet," never invented numbers.
+- [x] Notifications reflect real activity logs, grouped, decision-first.
+- [x] Zero-state shows "No runs yet," never invented numbers.
 
 Full contract: plan → Workstream D, Task D3.

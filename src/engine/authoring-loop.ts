@@ -80,7 +80,11 @@ export interface AuthoringRequest {
 }
 
 export interface AuthoringOptions {
-  maxIterations: number;
+  /** @deprecated Use resourceControls.maxIterations instead. If both are
+   *  provided, maxIterations overrides resourceControls.maxIterations. */
+  maxIterations?: number;
+  /** Resource controls (iterations, time, cost). Single source of truth. */
+  resourceControls?: ResourceControls;
 }
 
 export type LoopResult =
@@ -93,11 +97,17 @@ export async function runAuthoringLoop(
   runner: FirmwareJobRunner,
   opts: AuthoringOptions,
 ): Promise<LoopResult> {
+  // A6: fold opts.maxIterations into resourceControls — single source of truth
+  const controls: ResourceControls = {
+    ...(opts.resourceControls ?? DEFAULT_RESOURCE_CONTROLS),
+    ...(opts.maxIterations != null ? { maxIterations: opts.maxIterations } : {}),
+  };
+
   let files = req.files;
   let iterations = 0;
   let lastVm: RunViewModel | undefined;
 
-  while (iterations < opts.maxIterations) {
+  while (iterations < controls.maxIterations) {
     iterations++;
 
     const outcome = outcomeFromJob(await runner.run({ files, board: req.board }));
@@ -131,8 +141,6 @@ export async function runAuthoringLoop(
 export interface StatefulAuthoringOptions extends AuthoringOptions {
   /** Permission profile: review, guided, or autonomous */
   profile: PermissionProfile;
-  /** Resource controls: max iterations, time, cost */
-  resourceControls?: ResourceControls;
   /** Callback to check if the user has cancelled. Called before each iteration. */
   isCancelled?: () => boolean;
   /** Start time for elapsed time tracking (defaults to Date.now()) */
@@ -185,7 +193,11 @@ export async function runStatefulAuthoringLoop(
   runner: FirmwareJobRunner,
   opts: StatefulAuthoringOptions,
 ): Promise<StatefulLoopResult> {
-  const controls = opts.resourceControls ?? DEFAULT_RESOURCE_CONTROLS;
+  // A6: fold opts.maxIterations into resourceControls — single source of truth
+  const controls: ResourceControls = {
+    ...(opts.resourceControls ?? DEFAULT_RESOURCE_CONTROLS),
+    ...(opts.maxIterations != null ? { maxIterations: opts.maxIterations } : {}),
+  };
   const startTime = opts.startTimeMs ?? Date.now();
   const auditLog: StateTransition[] = [];
 
@@ -306,7 +318,9 @@ export async function runStatefulAuthoringLoop(
     const patch = proposePatch(files, vm.rootCause.register, req.assertion.register);
     files = patch.files;
 
-    recordTransition('rerunning', 'patch-approved', 'user');
+    // Actor is 'system' for auto-approval (autonomous profile).
+    // Only 'user' when there's a real human approval (future: resume after pause).
+    recordTransition('rerunning', 'patch-approved', 'system');
 
     // --- State: rerunning → building ---
     recordTransition('building', 'iteration-started', 'system');

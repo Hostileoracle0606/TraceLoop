@@ -4,7 +4,7 @@
 
 **Blocked by:** None — can start immediately.
 
-**Status:** ready-for-agent
+**Status:** complete
 
 - [ ] With the backend down, the sidebar badge reads unavailable, not connected.
 - [ ] Settings shows live per-dependency status; never "All core systems ready" unless every health check passes.

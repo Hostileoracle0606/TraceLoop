@@ -11,6 +11,7 @@ export const projects = pgTable('projects', {
   name: text('name').notNull(),
   description: text('description'),
   boardId: uuid('board_id').references(() => boards.id),
+  agentRuntimeDefault: varchar('agent_runtime_default', { length: 16 }).notNull().default('legacy'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 }, (table) => ({
@@ -29,6 +30,7 @@ export const projectsRelations = relations(projects, ({ one, many }) => ({
 export const boards = pgTable('boards', {
   id: uuid('id').primaryKey().defaultRandom(),
   name: text('name').notNull(),
+  slug: varchar('slug', { length: 64 }).notNull(),
   mcu: text('mcu').notNull(),
   architecture: text('architecture').notNull(),
   memoryFlash: integer('memory_flash').notNull(), // in KB
@@ -43,10 +45,12 @@ export const boards = pgTable('boards', {
   hasBLE: boolean('has_ble').default(false),
   hasWiFi: boolean('has_wifi').default(false),
   renodePlatformDescription: text('renode_platform_description'), // .repl file path in Renode's platform directory
+  verified: boolean('verified').default(false),
   status: varchar('status', { length: 16 }).default('active'), // active, deprecated, beta
   createdAt: timestamp('created_at').defaultNow().notNull(),
 }, (table) => ({
   nameUniqueIdx: uniqueIndex('boards_name_unique_idx').on(table.name),
+  slugUniqueIdx: uniqueIndex('boards_slug_unique_idx').on(table.slug),
 }));
 
 export const boardsRelations = relations(boards, ({ many }) => ({
@@ -92,6 +96,9 @@ export const tasks = pgTable('tasks', {
   
   // Permission profile
   permissionProfile: varchar('permission_profile', { length: 16 }).notNull().default('guided'),
+  
+  // Agent runtime (pinned at creation; never changes mid-task — C4)
+  agentRuntime: varchar('agent_runtime', { length: 16 }).notNull().default('legacy'),
   
   // Resource controls
   maxIterations: integer('max_iterations').notNull().default(5),

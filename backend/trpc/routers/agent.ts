@@ -2,10 +2,10 @@ import { z } from 'zod';
 import { eq } from 'drizzle-orm';
 import { router, authenticatedProcedure } from '../context';
 import { tasks, projects, boards, activityLogs } from '../../db/schema';
-import { clarifyIntent, generatePlan, editSource, proposePatchLLM } from '../../llm/functions';
 import { sanitizePath } from '../middleware/validate';
 import { applyFileOperationsWithRetry, type FileOperation } from '../../llm/apply-file-operations';
 import { validatePlan, validateEditOperations, validatePatchProposal } from '../../llm/validate';
+import { resolveAgentRuntime } from '../../agent/runtime-selection';
 
 /**
  * Agent tRPC router.
@@ -43,7 +43,11 @@ export const agentRouter = router({
         );
       }
 
-      const result = await clarifyIntent(task.intent, task.currentFiles ?? {});
+      const response = await resolveAgentRuntime(task).runStage({
+        stage: 'clarify', taskId: task.id, intent: task.intent, files: task.currentFiles ?? {},
+      });
+      if (response.kind !== 'clarification') throw new Error(`Unexpected stage response: ${response.kind}`);
+      const result = response.questions === null ? null : { questions: response.questions };
       return result;
     }),
 
@@ -84,12 +88,13 @@ export const agentRouter = router({
         throw new Error('Project has no board assigned');
       }
 
-      const plan = await generatePlan(
-        task.intent,
-        task.currentFiles ?? {},
-        { name: board.name, mcu: board.mcu, architecture: board.architecture },
-        task.acceptanceCriteria
-      );
+      const planResponse = await resolveAgentRuntime(task).runStage({
+        stage: 'plan', taskId: task.id, intent: task.intent, files: task.currentFiles ?? {},
+        board: { name: board.name, mcu: board.mcu, architecture: board.architecture },
+        criteria: task.acceptanceCriteria,
+      });
+      if (planResponse.kind !== 'plan') throw new Error(`Unexpected stage response: ${planResponse.kind}`);
+      const plan = planResponse.plan;
 
       // Persist plan advancement: transition planning → editing
       await ctx.db
@@ -152,7 +157,11 @@ export const agentRouter = router({
         throw new Error(`Plan validation failed: ${planValidation.errors.map(e => e.message).join('; ')}`);
       }
 
-      const result = await editSource(input.plan, task.currentFiles ?? {});
+      const editResponse = await resolveAgentRuntime(task).runStage({
+        stage: 'edit', taskId: task.id, plan: input.plan, files: task.currentFiles ?? {},
+      });
+      if (editResponse.kind !== 'operations') throw new Error(`Unexpected stage response: ${editResponse.kind}`);
+      const result = { operations: editResponse.operations, summary: editResponse.summary };
 
       // ADR-0007: Validate operations against plan scope, protected files, path traversal
       const planFiles = new Set(input.plan.steps.map(s => s.file));
@@ -193,6 +202,53 @@ export const agentRouter = router({
       });
 
       return { ...result, success: true, appliedFiles: Object.keys(updatedFiles) };
+    }),
+
+  /**
+   * E7: Single turn-path mutation for typed input.
+   * Accepts user text, classifies intent, returns an honest reply from the agent.
+   * Replaces the canned delayed response with a real backend call.
+   */
+  turn: authenticatedProcedure
+    .input(z.object({
+      taskId: z.string().uuid(),
+      text: z.string().min(1, 'Turn text must not be empty'),
+    }))
+    .mutation(async ({ ctx, input }) => {
+      const task = await ctx.db.query.tasks.findFirst({
+        where: eq(tasks.id, input.taskId),
+      });
+      if (!task) throw new Error('Task not found');
+
+      // Ownership check
+      const project = await ctx.db.query.projects.findFirst({
+        where: eq(projects.id, task.projectId),
+      });
+      if (!project || project.userId !== ctx.user.id) {
+        throw new Error('Access denied');
+      }
+
+      // FSM state check: reject terminal states
+      const terminalStates = ['completed', 'blocked', 'stopped'] as const;
+      if ((terminalStates as readonly string[]).includes(task.status)) {
+        throw new Error(
+          `Cannot submit turn: task is in '${task.status}' state`
+        );
+      }
+
+      const response = await resolveAgentRuntime(task).runStage({
+        stage: 'turn',
+        taskId: task.id,
+        text: input.text,
+        files: task.currentFiles ?? {},
+        context: {
+          taskStatus: task.status,
+          iteration: task.iteration,
+          permissionProfile: task.permissionProfile,
+        },
+      });
+      if (response.kind !== 'turn') throw new Error(`Unexpected stage response: ${response.kind}`);
+      return { reply: response.reply, action: response.action ?? null };
     }),
 
   /**
@@ -242,11 +298,12 @@ export const agentRouter = router({
       // Validate root cause source path for traversal
       sanitizePath(input.rootCause.source, 'rootCause.source');
 
-      const patch = await proposePatchLLM(
-        input.rootCause,
-        task.currentFiles ?? {},
-        input.assertion
-      );
+      const patchResponse = await resolveAgentRuntime(task).runStage({
+        stage: 'propose-patch', taskId: task.id, rootCause: input.rootCause,
+        files: task.currentFiles ?? {}, assertion: input.assertion,
+      });
+      if (patchResponse.kind !== 'patch') throw new Error(`Unexpected stage response: ${patchResponse.kind}`);
+      const patch = patchResponse.patch;
 
       // ADR-0007: Validate patch proposal via centralized enforcement point
       const patchValidation = validatePatchProposal(patch);

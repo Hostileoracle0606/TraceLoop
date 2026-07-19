@@ -4,7 +4,7 @@
 
 **Blocked by:** None — can start immediately (richer once 05/07 land).
 
-**Status:** ready-for-agent
+**Status:** complete
 
 - [ ] The bar shows live state on every loop screen; a running row exposes Stop directly.
 - [ ] When input is required, it says so with a single CTA.

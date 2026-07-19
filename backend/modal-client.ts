@@ -28,7 +28,7 @@ class ModalClient {
     return endpoint;
   }
 
-  async firmwareJob(request: FirmwareJobRequest): Promise<FirmwareJobResult> {
+  async runJob(request: FirmwareJobRequest): Promise<FirmwareJobResult> {
     const response = await fetch(`${this.getEndpoint()}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

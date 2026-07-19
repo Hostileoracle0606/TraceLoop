@@ -4,10 +4,10 @@
 
 **Blocked by:** None — can start immediately.
 
-**Status:** ready-for-agent
+**Status:** complete
 
-- [ ] `profile='review'` → loop pauses, `files` unchanged, no forged `patch-approved`.
-- [ ] `autonomous` → applies and proceeds.
-- [ ] `authoring-loop-stateful.test.ts` asserts the pause (not silent proceed).
+- [x] `profile='review'` → loop pauses, `files` unchanged, no forged `patch-approved`.
+- [x] `autonomous` → applies and proceeds.
+- [x] `authoring-loop-stateful.test.ts` asserts the pause (not silent proceed).
 
 Full contract: plan → Workstream A, Task A3.

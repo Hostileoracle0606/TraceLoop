@@ -4,10 +4,10 @@
 
 **Blocked by:** None — can start immediately (interacts with 05).
 
-**Status:** ready-for-agent
+**Status:** complete
 
-- [ ] `execute` from `completed`/`stopped`/`building` throws; two rapid calls create exactly one run.
-- [ ] The loop honours DB `resourceControls` (iteration/time/cost) — not `DEFAULT_RESOURCE_CONTROLS`.
-- [ ] Cost is accumulated and converted (cents↔dollars) consistently.
+- [x] `execute` from `completed`/`stopped`/`building` throws; two rapid calls create exactly one run.
+- [x] The loop honours DB `resourceControls` (iteration/time/cost) — not `DEFAULT_RESOURCE_CONTROLS`.
+- [x] Cost is accumulated and converted (cents↔dollars) consistently.
 
 Full contract: plan → Workstream A, Task A6.

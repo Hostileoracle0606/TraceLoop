@@ -9,7 +9,27 @@ export type ValidationErrorCode =
   | 'SCHEMA_VIOLATION'
   | 'LIMIT_EXCEEDED';
 
-export interface LLMValidationError {
+export class LLMValidationError extends Error {
+  readonly field: string;
+  readonly code: ValidationErrorCode;
+  readonly errors: ReadonlyArray<LLMValidationErrorDetail>;
+
+  constructor(field: string, code: ValidationErrorCode, message: string, errors?: LLMValidationErrorDetail[]) {
+    super(message);
+    this.name = 'LLMValidationError';
+    this.field = field;
+    this.code = code;
+    this.errors = errors ?? [{ field, code, message }];
+  }
+
+  static fromErrors(errors: LLMValidationErrorDetail[]): LLMValidationError {
+    const first = errors[0]!;
+    const combined = errors.map(e => `${e.code}: ${e.message}`).join('; ');
+    return new LLMValidationError(first.field, first.code, combined, errors);
+  }
+}
+
+export interface LLMValidationErrorDetail {
   field: string;
   code: ValidationErrorCode;
   message: string;
@@ -17,7 +37,7 @@ export interface LLMValidationError {
 
 export interface ValidationResult {
   valid: boolean;
-  errors: LLMValidationError[];
+  errors: LLMValidationErrorDetail[];
 }
 
 // Path traversal detection patterns
@@ -63,7 +83,7 @@ const MAX_DESCRIPTION_BYTES = 10240; // 10 KB
  * - Plan limits (step count, description size)
  */
 export function validatePlan(plan: unknown): ValidationResult {
-  const errors: LLMValidationError[] = [];
+  const errors: LLMValidationErrorDetail[] = [];
 
   // Schema validation
   const schemaResult = planSchema.safeParse(plan);
@@ -126,12 +146,31 @@ export function validatePlan(plan: unknown): ValidationResult {
 export function validateEditOperations(
   operations: unknown[],
   planFiles: Set<string>,
+  files?: Record<string, string>,
 ): ValidationResult {
-  const errors: LLMValidationError[] = [];
+  const errors: LLMValidationErrorDetail[] = [];
 
   for (let i = 0; i < operations.length; i++) {
-    const op = operations[i] as any;
-    const path = op.path;
+    const op = operations[i];
+    if (!op || typeof op !== 'object') {
+      errors.push({
+        field: `operations[${i}]`,
+        code: 'SCHEMA_VIOLATION',
+        message: 'Operation must be an object',
+      });
+      continue;
+    }
+
+    const typedOp = op as Record<string, unknown>;
+    const path = typedOp.path;
+    if (typeof path !== 'string') {
+      errors.push({
+        field: `operations[${i}].path`,
+        code: 'SCHEMA_VIOLATION',
+        message: 'Operation path must be a string',
+      });
+      continue;
+    }
 
     // Path traversal check
     if (containsPathTraversal(path)) {
@@ -160,6 +199,18 @@ export function validateEditOperations(
         message: `File '${path}' is not in the approved plan`,
       });
     }
+
+    // Search-exists-in-file check for edit operations
+    if (files && typedOp.type === 'edit' && typeof typedOp.search === 'string') {
+      const fileContent = files[path];
+      if (fileContent !== undefined && !fileContent.includes(typedOp.search)) {
+        errors.push({
+          field: `operations[${i}].search`,
+          code: 'SCHEMA_VIOLATION',
+          message: `Search string not found in '${path}'`,
+        });
+      }
+    }
   }
 
   return {
@@ -176,7 +227,7 @@ export function validateEditOperations(
  * - Confidence bounds [0, 1]
  */
 export function validatePatchProposal(patch: unknown): ValidationResult {
-  const errors: LLMValidationError[] = [];
+  const errors: LLMValidationErrorDetail[] = [];
 
   // Schema validation
   const schemaResult = patchProposalSchema.safeParse(patch);
@@ -215,4 +266,30 @@ export function validatePatchProposal(patch: unknown): ValidationResult {
     valid: errors.length === 0,
     errors,
   };
+}
+
+/**
+ * Validate with retry: calls generate(), validates the result, and if invalid,
+ * retries once. If still invalid after retry, throws a typed LLMValidationError.
+ */
+export async function validateWithRetry<T>(
+  generate: () => Promise<T>,
+  validate: (data: T) => ValidationResult,
+): Promise<T> {
+  // First attempt
+  const first = await generate();
+  const firstResult = validate(first);
+  if (firstResult.valid) {
+    return first;
+  }
+
+  // Retry once
+  const second = await generate();
+  const secondResult = validate(second);
+  if (secondResult.valid) {
+    return second;
+  }
+
+  // Budget exhausted — throw with the latest errors
+  throw LLMValidationError.fromErrors(secondResult.errors);
 }
